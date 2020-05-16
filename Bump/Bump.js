@@ -5,9 +5,10 @@
 /* global GroupInitiative TokenMod */
 const Bump = (() => { // eslint-disable-line no-unused-vars
 
-    const version = '0.2.17';
-    const lastUpdate = 1563495499;
-    const schemaVersion = 0.4;
+	const scriptName = "Bump";
+    const version = '0.2.19';
+    const lastUpdate = 1588691367;
+    const schemaVersion = 0.5;
     const clearURL = 'https://s3.amazonaws.com/files.d20.io/images/4277467/iQYjFOsYC5JsuOPUCI9RGA/thumb.png?1401938659';
     const checkerURL = 'https://s3.amazonaws.com/files.d20.io/images/16204335/MGS1pylFSsnd5Xb9jAzMqg/med.png?1455260461';
 
@@ -23,6 +24,16 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
             'light_radius', 'light_dimradius', 'light_angle', 'light_losangle','lastmove',
             'represents','bar1_link','bar2_link','bar3_link'
         ];
+
+    const mirroredPropsNoBar = [
+            'name', 'left', 'top', 'width', 'height', 'rotation',
+            'flipv', 'fliph', 'bar1_value',
+            'bar2_value', 'bar3_value',
+            'tint_color', 'lastmove', 'controlledby', 'light_hassight',
+            'light_radius', 'light_dimradius', 'light_angle', 'light_losangle','lastmove',
+            'represents'
+        ];
+
 
     const defaults = {
             css: {
@@ -69,22 +80,22 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
 	const cleanupObjectReferences = () => {
         const allIds = findObjs({type:'graphic'}).map( o => o.id);
         const ids = [
-                ...Object.keys(state.Bump.mirrored),
-                ...Object.values(state.Bump.mirrored)
+                ...Object.keys(state[scriptName].mirrored),
+                ...Object.values(state[scriptName].mirrored)
             ]
             .filter( id => !allIds.includes(id) );
 
             ids.forEach( id => {
-                if(state.Bump.mirrored.hasOwnProperty(id)){
-                    if(!ids.includes(state.Bump.mirrored[id])){
-                        let obj = getObj('graphic',state.Bump.mirrored[id]);
+                if(state[scriptName].mirrored.hasOwnProperty(id)){
+                    if(!ids.includes(state[scriptName].mirrored[id])){
+                        let obj = getObj('graphic',state[scriptName].mirrored[id]);
                         if(obj){
                             obj.remove();
                         }
                     }
                 } else {
-                    let iid = keyForValue(state.Bump.mirrored,id);
-                    delete state.Bump.mirrored[iid];
+                    let iid = keyForValue(state[scriptName].mirrored,id);
+                    delete state[scriptName].mirrored[iid];
                     if(!ids.includes(iid)){
                         createMirrored(iid, false, 'gm');
                     }
@@ -92,8 +103,36 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
             });
     };
 
+    const simpleObj = (o)=>JSON.parse(JSON.stringify(o));
+
+    const fixupSlaveBars = () => {
+      let ids = Object.values(state[scriptName].mirrored);
+      const burndown = () =>{
+        if(ids.length){
+          let id = ids.shift();
+          let slave = getObj('graphic',id);
+          if(slave){
+            if(state[scriptName].config.noBars) {
+              slave.set({
+                bar1_max: '',
+                bar2_max: '',
+                bar3_max: '',
+                bar1_link: '',
+                bar2_link: '',
+                bar3_link: ''
+              });
+            }
+            let prev = simpleObj(slave);
+            handleTokenChange(slave,prev);
+          }
+          setTimeout(burndown,0);
+        }
+      };
+      burndown();
+    };
+
 	const checkGlobalConfig = () => {
-		var s=state.Bump,
+		var s=state[scriptName],
 		g=globalconfig && globalconfig.bump;
 
 		if(g && g.lastsaved && g.lastsaved > s.globalconfigCache.lastsaved
@@ -109,34 +148,43 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
 
 			s.config.autoPush = 'autoPush' === g['Auto Push'];
 			s.config.autoSlave = 'autoSlave' === g['Auto Slave'];
+			s.config.autoUnslave = 'autoUnslave' === g['Auto Unslave'];
+			s.config.noBars = 'noBars' === g['No Bars on Slave'];
 
-			state.Bump.globalconfigCache=globalconfig.bump;
+			state[scriptName].globalconfigCache=globalconfig.bump;
 		}
 	};
 
     const checkInstall = () => {
-        log('-=> Bump v'+version+' <=-  ['+(new Date(lastUpdate*1000))+']');
+        log(`-=> ${scriptName} v${version} <=-  [${new Date(lastUpdate*1000)}]`);
 
-        if( ! state.hasOwnProperty('Bump') || state.Bump.version !== schemaVersion) {
+        if( ! state.hasOwnProperty(scriptName) || state[scriptName].version !== schemaVersion) {
             log('  > Updating Schema to v'+schemaVersion+' <');
-            switch(state.Bump && state.Bump.version) {
+            switch(state[scriptName] && state[scriptName].version) {
                 case 0.1:
-                    state.Bump.config.autoSlave = false;
+                    state[scriptName].config.autoSlave = false;
+                    /* falls through */
 
-                /* falls through */
-				case 0.2:
-				case 0.3:
-                  delete state.Bump.globalConfigCache;
-                  state.Bump.globalconfigCache = {lastsaved:0};
+                case 0.2:
+                case 0.3:
+                  delete state[scriptName].globalConfigCache;
+                  state[scriptName].globalconfigCache = {lastsaved:0};
+                  /* falls through */
 
-                /* falls through */
+                case 0.4:
+                  state[scriptName].lastHelpVersion=version;
+                  state[scriptName].config.noBars = false;
+                  state[scriptName].config.autoUnslave = false;
+                  /* falls through */
+
                 case 'UpdateSchemaVersion':
-                    state.Bump.version = schemaVersion;
+                    state[scriptName].version = schemaVersion;
                     break;
 
                 default:
-                    state.Bump = {
+                    state[scriptName] = {
                         version: schemaVersion,
+                        lastHelpVersion: version,
                         globalconfigCache: {lastsaved:0},
                         config: {
                             layerColors: {
@@ -144,7 +192,9 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
                                 'objects' : '#800080'
                             },
                             autoPush: false,
-                            autoSlave: false
+                            autoSlave: false,
+                            noBars: false,
+                            autoUnslave: false
                         },
                         mirrored: {}
                     };
@@ -153,6 +203,7 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
         }
         checkGlobalConfig();
         cleanupObjectReferences();
+        assureHelpHandout();
     };
 
     const ch = (c) => {
@@ -178,46 +229,6 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
         return '';
     };
 
-    const statusImg = (name) => {
-        const statusSheet = 'https://app.roll20.net/images/statussheet.png',
-        ratio = 2.173913,
-        scale = 1.4,
-        statuses = [
-            'red', 'blue', 'green', 'brown', 'purple', 'pink', 'yellow', // 0-6
-            'dead',
-            'skull', 'sleepy', 'half-heart', 'half-haze', 'interdiction',
-            'snail', 'lightning-helix', 'spanner', 'chained-heart',
-            'chemical-bolt', 'death-zone', 'drink-me', 'edge-crack',
-            'ninja-mask', 'stopwatch', 'fishing-net', 'overdrive', 'strong',
-            'fist', 'padlock', 'three-leaves', 'fluffy-wing', 'pummeled',
-            'tread', 'arrowed', 'aura', 'back-pain', 'black-flag',
-            'bleeding-eye', 'bolt-shield', 'broken-heart', 'cobweb',
-            'broken-shield', 'flying-flag', 'radioactive', 'trophy',
-            'broken-skull', 'frozen-orb', 'rolling-bomb', 'white-tower',
-            'grab', 'screaming', 'grenade', 'sentry-gun', 'all-for-one',
-            'angel-outfit', 'archery-target'
-        ],
-        statusColormap = [
-            '#C91010', // red
-            '#1076c9', // blue
-            '#2fc910', // green
-            '#c97310', // brown
-            '#9510c9', // purple
-            '#eb75e1', // pink
-            '#e5eb75', // yellow
-            '#cc1010'  // dead
-        ];
-
-        let i=statuses.indexOf(name);
-        if(i<7) {
-            return `<div style="width: ${scale*.9}em; height: ${scale*.9}em; border-radius:${scale}em; display:inline-block; margin: 0 3px 0 0; border:0; background-color: ${statusColormap[i]}"></div>`;
-        } 
-        if(7===i) {
-            return `<div style="width: 1em; height: ${scale}em; font-size: ${scale}em; display:inline-block; margin: 0; border:0; font-weight: bold; color: ${statusColormap[i]}">X</div>`;
-        }
-        return `<div style="width: ${scale}em; height: ${scale}em; display:inline-block; margin: 0 3px 0 0; border:0; padding:0;background-image: url('${statusSheet}');background-repeat:no-repeat;background-position: ${(ratio*(i-8))}% 0; background-size: auto ${scale}em;"></div>`;
-    };
-
     const _h = {
         outer: (...o) => `<div style="border: 1px solid black; background-color: white; padding: 3px 3px;">${o.join(' ')}</div>`,
         title: (t,v) => `<div style="font-weight: bold; border-bottom: 1px solid black;font-size: 130%;">${t} v${v}</div>`,
@@ -234,8 +245,8 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
         ul: (...o) => `<ul>${_h.items(o)}</ul>`,
         grid: (...o) => `<div style="padding: 12px 0;">${o.join('')}<div style="clear:both;"></div></div>`,
         cell: (o) =>  `<div style="width: 130px; padding: 0 3px; float: left;">${o}</div>`,
-        statusCell: (o) =>  `<div style="width: 130px; padding: 0 3px; height: 1.5em; float: left;">${statusImg(o)}${o}</div>`,
         inset: (...o) => `<div style="padding-left: 10px;padding-right:20px">${o.join(' ')}</div>`,
+        join: (...o) => o.join(' '),
         pre: (...o) =>`<div style="border:1px solid #e1e1e8;border-radius:4px;padding:8.5px;margin-bottom:9px;font-size:12px;white-space:normal;word-break:normal;word-wrap:normal;background-color:#f7f7f9;font-family:monospace;overflow:auto;">${o.join(' ')}</div>`,
         preformatted: (...o) =>_h.pre(o.join('<br>').replace(/\s/g,ch(' '))),
         code: (...o) => `<code>${o.join(' ')}</code>`,
@@ -254,13 +265,13 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
 
 
     const getMirroredPair = (id) => {
-        if(state.Bump.mirrored.hasOwnProperty(id)){
+        if(state[scriptName].mirrored.hasOwnProperty(id)){
             return {
                 master: getObj('graphic',id),
-                slave: getObj('graphic',state.Bump.mirrored[id])
+                slave: getObj('graphic',state[scriptName].mirrored[id])
             };
         }
-        let iid = keyForValue(state.Bump.mirrored,id);
+        let iid = keyForValue(state[scriptName].mirrored,id);
         if(iid){
             return {
                 master: getObj('graphic',iid),
@@ -270,10 +281,10 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
     };
 
     const getMirrored = (id) => {
-        if(state.Bump.mirrored.hasOwnProperty(id)){
-            return getObj('graphic',state.Bump.mirrored[id]);
+        if(state[scriptName].mirrored.hasOwnProperty(id)){
+            return getObj('graphic',state[scriptName].mirrored[id]);
         }
-        let iid = keyForValue(state.Bump.mirrored,id);
+        let iid = keyForValue(state[scriptName].mirrored,id);
         if(iid){
             return getObj('graphic',iid);
         }
@@ -287,15 +298,15 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
             layer;
 
         if(!slave && master) {
-            layer=((state.Bump.config.autoPush || push || 'gmlayer' === master.get('layer')) ? 'objects' : 'gmlayer');
-            if(state.Bump.config.autoPush || push) {
+            layer=((state[scriptName].config.autoPush || push || 'gmlayer' === master.get('layer')) ? 'objects' : 'gmlayer');
+            if(state[scriptName].config.autoPush || push) {
                 master.set({layer: 'gmlayer'});
             }
             baseObj = {
                 imgsrc: clearURL,
                 layer: layer,
                 pageid: master.get('pageid'),
-                aura1_color: state.Bump.config.layerColors[layer],
+                aura1_color: state[scriptName].config.layerColors[layer],
                 aura1_square: true,
                 aura1_radius: 0.000001,
                 light_otherplayers: (isPlayerToken(master) ? master.get('light_otherplayers') : false),
@@ -307,9 +318,9 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
                 showplayers_aura1: false,
                 showplayers_aura2: false
             };
-            mirroredProps.forEach( p => baseObj[p]=master.get(p) );
+            (state[scriptName].config.noBars ? mirroredPropsNoBar : mirroredProps ).forEach( p => baseObj[p]=master.get(p) );
             slave = createObj('graphic',baseObj);
-            state.Bump.mirrored[master.id]=slave.id;
+            state[scriptName].mirrored[master.id]=slave.id;
         } else {
             if(!slave) {
                 sendChat('',`/w "${who}" `+
@@ -330,7 +341,7 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
     const setSlaveLayer = (obj,layer) => {
         obj.set({
             layer: layer,
-            aura1_color: state.Bump.config.layerColors[layer]
+            aura1_color: state[scriptName].config.layerColors[layer]
         });
     };
 
@@ -340,7 +351,11 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
             switch(pair.master.get('layer')){
                 case 'gmlayer':
                     setMasterLayer(pair.master,'objects');
-                    setSlaveLayer(pair.slave,'gmlayer');
+                    if(state[scriptName].config.autoUnslave){
+                        removeMirrored(pair.master.id);
+                    } else {
+                        setSlaveLayer(pair.slave,'gmlayer');
+                    }
                     break;
 
                 default:
@@ -348,7 +363,7 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
                     setSlaveLayer(pair.slave,'objects');
                     break;
             }
-        } else if(state.Bump.config.autoSlave) {
+        } else if(state[scriptName].config.autoSlave) {
             createMirrored(id, false, who);
         }
     };
@@ -357,7 +372,7 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
         var pair=getMirroredPair(id);
         if(pair) {
             pair.slave.remove();
-            delete state.Bump.mirrored[pair.master.id];
+            delete state[scriptName].mirrored[pair.master.id];
         }
     };
 
@@ -401,7 +416,9 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
                 pair.master.set('statusmarkers',packSM(mSM));
             }
 
-            (pair.master.id === obj.id ? pair.slave : pair.master).set(mirroredProps.reduce((m,p) => {
+            const propList = (state[scriptName].config.noBars ? mirroredPropsNoBar : mirroredProps );
+
+            (pair.master.id === obj.id ? pair.slave : pair.master).set(propList.reduce((m,p) => {
                 m[p]=obj.get(p);
                 return m;
             },{}));
@@ -414,12 +431,12 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
                     showplayers_bar3: false,
                     showplayers_aura1: false,
                     showplayers_aura2: false
-                },(mirroredProps.reduce((m,p) => {
+                },(propList.reduce((m,p) => {
                     m[p]=pair.slave.get(p);
                     return m;
                 },{}))));
             } else {
-                pair.master.set(mirroredProps.reduce((m,p) => {
+                pair.master.set(propList.reduce((m,p) => {
                     m[p]=pair.master.get(p);
                     return m;
                 },{}));
@@ -483,8 +500,8 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
 
     const getConfigOption_GMLayerColor = () => {
         return makeConfigOptionColor(
-            state.Bump.config.layerColors.gmlayer,
-            '!bump-config --gm-layer-color|?{What aura color for when the master token is visible? (transparent for none, #RRGGBB for a color)|'+state.Bump.config.layerColors.gmlayer+'}',
+            state[scriptName].config.layerColors.gmlayer,
+            '!bump-config --gm-layer-color|?{What aura color for when the master token is visible? (transparent for none, #RRGGBB for a color)|'+state[scriptName].config.layerColors.gmlayer+'}',
             '<b>GM Layer (Visible) Color</b> is the color the overlay turns when it is on the GM Layer, thus indicating that the Bumped token is visible to the players on the Object Layer.'
         );
 
@@ -492,15 +509,15 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
 
     const getConfigOption_ObjectsLayerColor = () => {
         return makeConfigOptionColor(
-            state.Bump.config.layerColors.objects,
-            '!bump-config --objects-layer-color|?{What aura color for when the master token is invisible? (transparent for none, #RRGGBB for a color)|'+state.Bump.config.layerColors.objects+'}',
+            state[scriptName].config.layerColors.objects,
+            '!bump-config --objects-layer-color|?{What aura color for when the master token is invisible? (transparent for none, #RRGGBB for a color)|'+state[scriptName].config.layerColors.objects+'}',
             '<b>Objects Layer (Invisible) Color</b> is the color the overlay turns when it is on the Objects Layer, thus indicating that the Bumped token is invisible to the players on the GM Layer.'
         );
     };
 
     const getConfigOption_AutoPush = () => {
         return makeConfigOption(
-            state.Bump.config.autoPush,
+            state[scriptName].config.autoPush,
             '!bump-config --toggle-auto-push',
             '<b>Auto Push</b> automatically moves a bumped token to the GM Layer when it gets added to Bump.'
         );
@@ -508,9 +525,25 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
 
     const getConfigOption_AutoSlave = () => {
         return makeConfigOption(
-            state.Bump.config.autoSlave,
+            state[scriptName].config.autoSlave,
             '!bump-config --toggle-auto-slave',
             '<b>Auto Slave</b> causes tokens that are not in Bump to be put into Bump when ever !bump is run with them selected.'
+        );
+    };
+
+    const getConfigOption_AutoUnslave = () => {
+        return makeConfigOption(
+            state[scriptName].config.autoUnslave,
+            '!bump-config --toggle-auto-unslave',
+            '<b>Auto Unslave</b> causes tokens that are in Bump to be unslaved when they are moved back to the Token Layer.'
+        );
+    };
+
+    const getConfigOption_NoBars = () => {
+        return makeConfigOption(
+            state[scriptName].config.noBars,
+            '!bump-config --toggle-no-bars',
+            '<b>No Bars on Slave</b> causes slave tokens to only mirror the current value on the bars, not the max, preventing them from having bars.'
         );
     };
 
@@ -518,14 +551,33 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
         return getConfigOption_GMLayerColor() +
             getConfigOption_ObjectsLayerColor() +
             getConfigOption_AutoPush() +
-            getConfigOption_AutoSlave();
+            getConfigOption_AutoSlave() +
+            getConfigOption_AutoUnslave() +
+            getConfigOption_NoBars();
     };
 
-    const showHelp = (playerid) => {
-        const who=(getObj('player',playerid)||{get:()=>'API'}).get('_displayname');
-        sendChat('',`/w "${who}" `+
-            _h.outer(
-                _h.title('Bump', version),
+    const assureHelpHandout = (create = false) => {
+        const helpIcon = "https://s3.amazonaws.com/files.d20.io/images/127392204/tAiDP73rpSKQobEYm5QZUw/thumb.png?15878425385";
+
+        // find handout
+        let props = {type:'handout', name:`Help: ${scriptName}`};
+        let hh = findObjs(props)[0];
+        if(!hh) {
+            hh = createObj('handout',Object.assign(props, {inplayerjournals: "all", avatar: helpIcon}));
+            create = true;
+        }
+        if(create || version !== state[scriptName].lastHelpVersion){
+            hh.set({
+                notes: helpParts.helpDoc({who:'handout',playerid:'handout'})
+            });
+            state[scriptName].lastHelpVersion = version;
+            log('  > Updating Help Handout to v'+version+' <');
+        }
+    };
+
+
+    const helpParts = {
+        helpBody: (context) => _h.join(
                 _h.header(
                     _h.paragraph('Bump provides a way to invisibly manipulate tokens on the GM Layer from the Objects Layer, and vice versa.')
                 ),
@@ -567,15 +619,33 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
                     _h.paragraph('Non-GM players can also use bump on characters they control.  They will be able to see their bumped token as a transparent aura, but other players will not.  This is useful for invisible characters.'),
                     _h.paragraph(`While changes on the slave token will be reflected on the master token, Status Markers have a special behavior.  Status Markers are always cleared from the slave token to prevent it from being visible, with the following changes being made to the master token. Adding a Status Marker on a slave token that is not on the master token will cause that Status Marker to be added to the master token. Adding a Status Marker to the slave token that is on the master token causes it to be removed from the master token.  Adding a Status Marker with a number on the slave token will cause that number to be added to the master token${ch("'")}s Status Marker. Note that non-GM players will not be able to see Status Markers.`)
                 ),
-                ( playerIsGM(playerid)
+                ( playerIsGM(context.playerid)
                     ?  _h.group(
                             _h.subhead('Configuration'),
                             getAllConfigOptions()
                         )
                     : ''
                 )
+            ),
+        helpDoc: (context) => _h.join(
+                _h.title(scriptName, version),
+                helpParts.helpBody(context)
+            ),
+
+        helpChat: (context) => _h.outer(
+                _h.title(scriptName, version),
+                helpParts.helpBody(context)
             )
-        );
+        
+    };
+
+    const showHelp = (playerid) => {
+        const who=(getObj('player',playerid)||{get:()=>'API'}).get('_displayname');
+        let context = {
+            who,
+            playerid
+        };
+        sendChat('', '/w "'+who+'" '+ helpParts.helpChat(context));
     };
 
     const handleInput = (msg) => {
@@ -638,7 +708,7 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
                     switch(opt.shift()) {
                         case '--gm-layer-color':
                             if(opt[0].match(regex.colors)) {
-                               state.Bump.config.layerColors.gmlayer=opt[0];
+                               state[scriptName].config.layerColors.gmlayer=opt[0];
                             } else {
                                 omsg='<div><b>Error:</b> Not a valid color: '+opt[0]+'</div>';
                             }
@@ -652,7 +722,7 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
 
                         case '--objects-layer-color':
                             if(opt[0].match(regex.colors)) {
-                               state.Bump.config.layerColors.objects=opt[0];
+                               state[scriptName].config.layerColors.objects=opt[0];
                             } else {
                                 omsg='<div><b>Error:</b> Not a valid color: '+opt[0]+'</div>';
                             }
@@ -665,7 +735,7 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
                             break;
 
                         case '--toggle-auto-push':
-                            state.Bump.config.autoPush=!state.Bump.config.autoPush;
+                            state[scriptName].config.autoPush=!state[scriptName].config.autoPush;
                             sendChat('','/w "'+who+'" '+
                                 '<div style="border: 1px solid black; background-color: white; padding: 3px 3px;">'+
                                     getConfigOption_AutoPush()+
@@ -674,10 +744,29 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
                             break;
                         
                         case '--toggle-auto-slave':
-                            state.Bump.config.autoSlave=!state.Bump.config.autoSlave;
+                            state[scriptName].config.autoSlave=!state[scriptName].config.autoSlave;
                             sendChat('','/w "'+who+'" '+
                                 '<div style="border: 1px solid black; background-color: white; padding: 3px 3px;">'+
                                     getConfigOption_AutoSlave()+
+                                '</div>'
+                            );
+                            break;
+
+                        case '--toggle-auto-unslave':
+                            state[scriptName].config.autoUnslave=!state[scriptName].config.autoUnslave;
+                            sendChat('','/w "'+who+'" '+
+                                '<div style="border: 1px solid black; background-color: white; padding: 3px 3px;">'+
+                                    getConfigOption_AutoUnslave()+
+                                '</div>'
+                            );
+                            break;
+
+                        case '--toggle-no-bars':
+                            state[scriptName].config.noBars=!state[scriptName].config.noBars;
+                            fixupSlaveBars();
+                            sendChat('','/w "'+who+'" '+
+                                '<div style="border: 1px solid black; background-color: white; padding: 3px 3px;">'+
+                                    getConfigOption_NoBars()+
                                 '</div>'
                             );
                             break;
@@ -697,7 +786,7 @@ const Bump = (() => { // eslint-disable-line no-unused-vars
          Campaign().set({
             turnorder: JSON.stringify(
                 JSON.parse( Campaign().get('turnorder') || '[]').map( (turn) => {
-                    let iid = keyForValue(state.Bump.mirrored,turn.id);
+                    let iid = keyForValue(state[scriptName].mirrored,turn.id);
                     if(iid) {
                         turn.id = iid;
                     }
