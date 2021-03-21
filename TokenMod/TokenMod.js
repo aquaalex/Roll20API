@@ -1,11 +1,16 @@
 // Github:   https://github.com/shdwjk/Roll20API/blob/master/TokenMod/TokenMod.js
 // By:       The Aaron, Arcane Scriptomancer
 // Contact:  https://app.roll20.net/users/104025/the-aaron
+var API_Meta = API_Meta||{};
+API_Meta.TokenMod={offset:Number.MAX_SAFE_INTEGER,lineCount:-1};
+{try{throw new Error('');}catch(e){API_Meta.TokenMod.offset=(parseInt(e.stack.split(/\n/)[1].replace(/^.*:(\d+):.*$/,'$1'),10)-6);}}
 
 const TokenMod = (() => { // eslint-disable-line no-unused-vars
 
-    const version = '0.8.56';
-    const lastUpdate = 1589026818;
+    const scriptName = "TokenMod";
+    const version = '0.8.64';
+    API_Meta.TokenMod.version = version;
+    const lastUpdate = 1613710516;
     const schemaVersion = 0.4;
 
     const fields = {
@@ -30,12 +35,17 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             fliph: {type: 'boolean'},
             aura1_square: {type: 'boolean'},
             aura2_square: {type: 'boolean'},
-            
-                // UDL settings
+
+            // UDL settings
             has_bright_light_vision: {type: 'boolean'},
             has_night_vision: {type: 'boolean'},
             emits_bright_light: {type: 'boolean'},
             emits_low_light: {type: 'boolean'},
+            has_limit_field_of_vision: {type: 'boolean'},
+            has_limit_field_of_night_vision: {type: 'boolean'},
+            has_directional_bright_light: {type: 'boolean'},
+            has_directional_low_light: {type: 'boolean'},
+            
 
             // bounded by screen size
             left: {type: 'number', transform: 'screen'},
@@ -49,6 +59,18 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             light_angle: {type: 'circleSegment'},
             light_losangle: {type: 'circleSegment'},
 
+            limit_field_of_vision_center: {type: 'degrees'},
+            limit_field_of_night_vision_center: {type: 'degrees'},
+            directional_bright_light_center: {type: 'degrees'},
+            directional_low_light_center: {type: 'degrees'},
+
+            limit_field_of_vision_total: {type: 'circleSegment'},
+            limit_field_of_night_vision_total: {type: 'circleSegment'},
+            directional_bright_light_total: {type: 'circleSegment'},
+            directional_low_light_total: {type: 'circleSegment'},
+
+
+
             // distance
             light_radius: {type: 'numberBlank'},
             light_dimradius: {type: 'numberBlank'},
@@ -61,6 +83,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             night_vision_distance: {type: 'numberBlank'},
             bright_light_distance: {type: 'numberBlank'},
             low_light_distance: {type: 'numberBlank'},
+            dim_light_opacity: {type: 'percentage'},
 
             // text or numbers
             bar1_value: {type: 'text'},
@@ -81,6 +104,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             aura1_color: {type: 'color'},
             aura2_color: {type: 'color'},
             tint_color: {type: 'color'},
+            night_vision_tint: {type: 'color'},
 
             // Text : special
             name: {type: 'text'},
@@ -90,9 +114,9 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             bar1_link: {type: 'attribute'},
             bar2_link: {type: 'attribute'},
             bar3_link: {type: 'attribute'},
-			currentSide: {type: 'sideNumber'},
+            currentSide: {type: 'sideNumber'},
             imgsrc: {type: 'image'},
-			sides: {type: 'image' },
+            sides: {type: 'image' },
 
             controlledby: {type: 'player'},
 
@@ -111,6 +135,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             night_distance: "night_vision_distance",   
             bright_distance: "bright_light_distance",    
             low_distance: "low_light_distance",
+            low_light_opacity: "dim_light_opacity",
             currentside: "currentSide"   // fix for case issue
         };
 
@@ -134,35 +159,53 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             isTruthyArgument: (a) => [1,'1','on','yes','true','sure','yup'].includes(a)
         };
 
-	const getCleanImgsrc = (imgsrc) => {
-			var parts = imgsrc.match(/(.*\/images\/.*)(thumb|med|original|max)([^?]*)(\?[^?]+)?$/);
-			if(parts) {
-				return parts[1]+'thumb'+parts[3]+(parts[4]?parts[4]:`?${Math.round(Math.random()*9999999)}`);
-			}
-			return;
-		};
+    const getCleanImgsrc = (imgsrc) => {
+      var parts = imgsrc.match(/(.*\/images\/.*)(thumb|med|original|max)([^?]*)(\?[^?]+)?$/);
+      if(parts) {
+        return parts[1]+'thumb'+parts[3]+(parts[4]?parts[4]:`?${Math.round(Math.random()*9999999)}`);
+      }
+      return;
+    };
+
+    const forceLightUpdateOnPage = (()=>{
+        const forPage = (pid) => (getObj('page',pid)||{set:()=>{}}).set('force_lighting_refresh',true);
+        let pids = new Set();
+        let t;
+
+        return (pid) => {
+          pids.add(pid);
+          clearTimeout(t);
+          t = setTimeout(() => {
+            let activePages = getActivePages();
+            [...pids].filter(p=>activePages.includes(p)).forEach(forPage);
+            pids.clear();
+          },100);
+        };
+    })();
 
     const regex = {
-            numberString: /^[-+*/]?(0|[1-9][0-9]*)([.]+[0-9]*)?([eE][+-]?[0-9]+)?$/,
-            stripSingleQuotes: /'([^']+(?='))'/g,
-            stripDoubleQuotes: /"([^"]+(?="))"/g,
-            layers: /^(?:gmlayer|objects|map|walls)$/,
+      moveAngle: /^(=)?([+-]?(?:0|[1-9][0-9]*))(!)?$/,
+      moveDistance: /^([+-]?\d+\.?|\d*\.\d+)(u|g|s|ft|m|km|mi|in|cm|un|hex|sq)?$/i,
+      numberString: /^[-+*/]?(0|[1-9][0-9]*)([.]+[0-9]*)?([eE][+-]?[0-9]+)?$/,
+      stripSingleQuotes: /'([^']+(?='))'/g,
+      stripDoubleQuotes: /"([^"]+(?="))"/g,
+      layers: /^(?:gmlayer|objects|map|walls)$/,
 
-            imgsrc: /(.*\/images\/.*)(thumb|med|original|max)(.*)$/,
-            imageOp: /^(?:(-(?:\d*(?:\s*,\s*\d+)*|\*)$)|(\/(?:\d+@\d+(?:\s*,\s*\d+@\d+)*|\*)$)|([+^]))?(=?)(?:(https?:\/\/.*$)|([-\d\w]*))(?::(.*))?$/,
-			sideNumber: /^(\?)?([-+=*])?(\d*)$/,
-			color : {
-				ops: '([*=+\\-!])?',
-				transparent: '(transparent)',
-				html: '#?((?:[0-9a-f]{6})|(?:[0-9a-f]{3}))',
-				rgb: '(rgb\\(\\s*(?:(?:\\d*\\.\\d+)\\s*,\\s*(?:\\d*\\.\\d+)\\s*,\\s*(?:\\d*\\.\\d+)|(?:\\d+)\\s*,\\s*(?:\\d+)\\s*,\\s*(?:\\d+))\\s*\\))',
-				hsv: '(hsv\\(\\s*(?:(?:\\d*\\.\\d+)\\s*,\\s*(?:\\d*\\.\\d+)\\s*,\\s*(?:\\d*\\.\\d+)|(?:\\d+)\\s*,\\s*(?:\\d+)\\s*,\\s*(?:\\d+))\\s*\\))'
-			}
-        };
+      imgsrc: /(.*\/images\/.*)(thumb|med|original|max)(.*)$/,
+      imageOp: /^(?:(-(?:\d*(?:\s*,\s*\d+)*|\*)$)|(\/(?:\d+@\d+(?:\s*,\s*\d+@\d+)*|\*)$)|([+^]))?(=?)(?:(https?:\/\/.*$)|([-\d\w]*))(?::(.*))?$/,
+      sideNumber: /^(\?)?([-+=*])?(\d*)$/,
+      color : {
+        ops: '([*=+\\-!])?',
+        transparent: '(transparent)',
+        html: '#?((?:[0-9a-f]{6})|(?:[0-9a-f]{3}))',
+        rgb: '(rgb\\(\\s*(?:(?:\\d*\\.\\d+)\\s*,\\s*(?:\\d*\\.\\d+)\\s*,\\s*(?:\\d*\\.\\d+)|(?:\\d+)\\s*,\\s*(?:\\d+)\\s*,\\s*(?:\\d+))\\s*\\))',
+        hsv: '(hsv\\(\\s*(?:(?:\\d*\\.\\d+)\\s*,\\s*(?:\\d*\\.\\d+)\\s*,\\s*(?:\\d*\\.\\d+)|(?:\\d+)\\s*,\\s*(?:\\d+)\\s*,\\s*(?:\\d+))\\s*\\))'
+      }
+    };
 
-	const colorOpReg = new RegExp(`^${regex.color.ops}(?:${regex.color.transparent}|${regex.color.html}|${regex.color.rgb}|${regex.color.hsv})$`,'i');
-	const colorReg = new RegExp(`^(?:${regex.color.transparent}|${regex.color.html}|${regex.color.rgb}|${regex.color.hsv})$`,'i');
-	const colorParams = /\(\s*(\d*\.?\d+)\s*,\s*(\d*\.?\d+)\s*,\s*(\d*\.?\d+)\s*\)/;
+    const colorOpReg = new RegExp(`^${regex.color.ops}(?:${regex.color.transparent}|${regex.color.html}|${regex.color.rgb}|${regex.color.hsv})$`,'i');
+    const colorReg = new RegExp(`^(?:${regex.color.transparent}|${regex.color.html}|${regex.color.rgb}|${regex.color.hsv})$`,'i');
+    const colorParams = /\(\s*(\d*\.?\d+)\s*,\s*(\d*\.?\d+)\s*,\s*(\d*\.?\d+)\s*\)/;
 
 
 
@@ -172,7 +215,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
 
         class numberOp {
             static parse(field, str, permitBlank=true) {
-                const regexp = /^([=+\-/*!])?(-?\d+\.?|\d*\.\d+)(u|g|s|ft|m|km|mi|in|cm|un|hex|sq)?$/i;
+                const regexp = /^([=+\-/*!])?(-?\d+\.?|\d*\.\d+)(u|g|s|ft|m|km|mi|in|cm|un|hex|sq)?(!)?$/i;
 
                 if(!str.length && permitBlank){
                     return new numberOp(field, '','','' );
@@ -184,23 +227,72 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     let oper = m[1]||'';
                     let num = parseFloat(m[2]);
                     let scale = m[3]||'';
+                    let enforceBounds = '!'===m[4];
 
-                    return new numberOp(field, oper, num, scale.toLowerCase());
+                    return new numberOp(field, oper, num, scale.toLowerCase(),enforceBounds);
                 }
                 return {getMods:()=>({})};
             }
 
-            constructor(field,op,num,rel){
+            constructor(field,op,num,units,enforce){
                 this.field=field;
                 this.operation = op;
                 this.num = num;
-                this.relative = rel;
+                this.units = units;
+                this.enforce = enforce;
+            }
+
+            static ConvertUnitsPixel(num,unit,page){
+              const unitSize = 70;
+                switch(unit){
+                    case 'u':
+                        return num*unitSize;
+
+                    case 'g':
+                        return num*(parseFloat(page.get('snapping_increment'))*unitSize);
+
+                    case 'ft':
+                    case 'm':
+                    case 'km':
+                    case 'mi':
+                    case 'in':
+                    case 'cm':
+                    case 'un':
+                    case 'hex':
+                    case 'sq':
+                    case 's':
+                        return (num/(parseFloat(page.get('scale_number'))||1))*unitSize;
+                    default:
+                      return num;
+                }
+            }
+
+            static ConvertUnitsRoll20(num,unit,page){
+                switch(unit){
+                    case 'u':
+                        return num*(parseFloat(page.get('scale_number'))*(1/parseFloat(page.get('snapping_increment'))||1));
+
+                    case 'g':
+                        return num*parseFloat(page.get('scale_number'));
+
+                    default:
+                    case 'ft':
+                    case 'm':
+                    case 'km':
+                    case 'mi':
+                    case 'in':
+                    case 'cm':
+                    case 'un':
+                    case 'hex':
+                    case 'sq':
+                    case 's':
+                         return num;
+                }
             }
 
             getMods(token,mods){
                 let num = this.num;
                 let page = getObj('page',token.get('pageid'));
-                const unitSize = 70;
                 switch(this.field){
 
                     case 'light_radius':
@@ -214,29 +306,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     case 'night_distance':
                     case 'bright_distance':
                     case 'low_distance':
-                        // convert to scale_number relative
-                        switch(this.relative){
-                            case 'u':
-                                num*=(parseFloat(page.get('scale_number'))*(1/parseFloat(page.get('snapping_increment'))||1));
-                                break;
-                                
-                            case 'g':
-                                num*=parseFloat(page.get('scale_number'));
-                                break;
-
-                            default:
-                            case 'ft':
-                            case 'm':
-                            case 'km':
-                            case 'mi':
-                            case 'in':
-                            case 'cm':
-                            case 'un':
-                            case 'hex':
-                            case 'sq':
-                            case 's':
-                                break;
-                        }
+                        num = numberOp.ConvertUnitsRoll20(num,this.units,page);
                         break;
 
                     default:
@@ -244,30 +314,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     case 'top':
                     case 'width':
                     case 'height':
-                        // convert to pixel relative
-                        switch(this.relative){
-                            case 'u':
-                                num*=unitSize;
-                                break;
-                            case 'g':
-                                num*=(parseFloat(page.get('snapping_increment'))*unitSize);
-                                break;
-
-                            case 'ft':
-                            case 'm':
-                            case 'km':
-                            case 'mi':
-                            case 'in':
-                            case 'cm':
-                            case 'un':
-                            case 'hex':
-                            case 'sq':
-                            case 's':
-                                num = (num/(parseFloat(page.get('scale_number'))||1))*unitSize;
-                                break;
-                            default:
-                        }
-
+                        num = numberOp.ConvertUnitsPixel(num,this.units,page);
                         break;
 
                     case 'light_multiplier':
@@ -277,28 +324,43 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
 
                 let current = parseFloat(token.get(this.field))||0;
                 const getValue = (k,m,t) => m.hasOwnProperty(k) ? m[k] : t.get(k);
+
+                let adjuster = (a)=>a;
+
+                if(this.enforce){
+                  switch(this.field){
+                    case 'bar1_value':
+                    case 'bar2_value':
+                    case 'bar3_value':
+                      adjuster = (a,t)=>Math.max(0,Math.min(a,t.get(this.field.replace(/_value/,'_max'))));
+                      break;
+                  }
+                }
+
                 switch(this.operation){
                     default:
                     case '=': {
                         switch(this.field){
                             case 'bright_light_distance':
+                                num=num||0;
                                 return {
                                     bright_light_distance: num,
-                                    low_light_distance: (parseFloat(getValue('low_light_distance',mods,token))-parseFloat(getValue('bright_light_distance',mods,token))+num)
+                                    low_light_distance: (parseFloat(getValue('low_light_distance',mods,token)||0)-(parseFloat(getValue('bright_light_distance',mods,token))||0)+num)
                                 };
                             case 'low_light_distance':
+                                num=num||0;
                                 return {
-                                    low_light_distance: (parseFloat(getValue('bright_light_distance',mods,token))+num)
+                                    low_light_distance: ((parseFloat(getValue('bright_light_distance',mods,token))||0)+num)
                                 };
                             default:
-                                return {[this.field]:num};
+                                return {[this.field]:adjuster(num,token)};
                         }
                     }
-                    case '!': return {[this.field]:(current===0 ? num : '')};
-                    case '+': return {[this.field]:(current+num)};
-                    case '-': return {[this.field]:(current-num)};
-                    case '/': return {[this.field]:(current/(num||1))};
-                    case '*': return {[this.field]:(current*num)};
+                    case '!': return {[this.field]:adjuster((current===0 ? num : ''),token)};
+                    case '+': return {[this.field]:adjuster((current+num),token)};
+                    case '-': return {[this.field]:adjuster((current-num),token)};
+                    case '/': return {[this.field]:adjuster((current/(num||1)),0)};
+                    case '*': return {[this.field]:adjuster((current*num),0)};
                 }
             }
 
@@ -401,14 +463,13 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
           }
 
           constructor(op,set,indicies,urls){
-            //$d({op,set,indicies,urls});
             this.op = op||'/';
             this.set = set || false;
             this.indicies=indicies||[];
             this.urls=urls||[];
           }
 
-          getMods(token,mods){
+          getMods(token /* ,mods */){
             let sideText = token.get('sides');
             let sides;
 
@@ -545,365 +606,365 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
         // Side Numbers
         ////////////////////////////////////////////////////////////
 
-		class sideNumberOp {
+        class sideNumberOp {
 
-			static parseSideNumber(input){
-                const OP_FLAG = 1;
-                const OP_OPERATION = 2;
-                const OP_COUNT = 3;
-				let parsed = input.toLowerCase().match(regex.sideNumber);
-				if(parsed && parsed.length){
-					return new sideNumberOp( parsed[ OP_FLAG ], parsed[ OP_OPERATION ], parsed[ OP_COUNT ] );
-				}
-				return new sideNumberOp(false,'/');
-			}
+          static parseSideNumber(input){
+            const OP_FLAG = 1;
+            const OP_OPERATION = 2;
+            const OP_COUNT = 3;
+            let parsed = input.toLowerCase().match(regex.sideNumber);
+            if(parsed && parsed.length){
+              return new sideNumberOp( parsed[ OP_FLAG ], parsed[ OP_OPERATION ], parsed[ OP_COUNT ] );
+            }
+            return new sideNumberOp(false,'/');
+          }
 
-			constructor(flag,op,count){
-				this.flag=flag||false;
-				this.operation=op||'=';
-				this.count=(parseInt(`${count}`)||1);
-			}
+          constructor(flag,op,count){
+            this.flag=flag||false;
+            this.operation=op||'=';
+            this.count=(parseInt(`${count}`)||1);
+          }
 
 
-			getMods(token,mods){
-				// get sides
-				let sides = token.get('sides').split(/\|/).map(decodeURIComponent).map(getCleanImgsrc);
-				switch(this.operation){
-					case '/':
-						return {};
-					case '=':
-						if(sides[this.count-1]){
-							return {
-								currentSide: this.count-1,
-								imgsrc: sides[this.count-1]
-							};
-						}
-						return {};
-					case '*': {
-						// get indexes that are valid
-						let idxs=sides.reduce((m,v)=> ({ c:m.c+1, i:(v?[...m.i,m.c]:m.i) }), {c:0,i:[]}).i;
-						if(idxs.length){
-							let idx=_.sample(idxs);
-							return {
-								currentSide: idx,
-								imgsrc: sides[idx]
-							};
-						}
-						return {};
-					}
-					case '+':
-					case '-': {
-						let idx = token.get('currentSide')||0;
-						idx += ('-'===this.operation ? -1 : 1)*this.count;
-						if(this.flag){
-							idx=Math.max(Math.min(idx,sides.length-1),0);
-						} else {
-							idx=(idx%sides.length)+(idx<0 ? sides.length : 0);
-						}
-						if(sides[idx]){
-							return {
-								currentSide: idx,
-								imgsrc: sides[idx]
-							};
-						}
-						return {};
-					}
-							
-				}
-				
-			}
-		}
+          getMods(token /*,mods */){
+            // get sides
+            let sides = token.get('sides').split(/\|/).map(decodeURIComponent).map(getCleanImgsrc);
+            switch(this.operation){
+              case '/':
+                return {};
+              case '=':
+                if(sides[this.count-1]){
+                  return {
+                    currentSide: this.count-1,
+                    imgsrc: sides[this.count-1]
+                  };
+                }
+                return {};
+              case '*': {
+                // get indexes that are valid
+                let idxs=sides.reduce((m,v)=> ({ c:m.c+1, i:(v?[...m.i,m.c]:m.i) }), {c:0,i:[]}).i;
+                if(idxs.length){
+                  let idx=_.sample(idxs);
+                  return {
+                    currentSide: idx,
+                    imgsrc: sides[idx]
+                  };
+                }
+                return {};
+              }
+            case '+':
+            case '-': {
+              let idx = token.get('currentSide')||0;
+              idx += ('-'===this.operation ? -1 : 1)*this.count;
+              if(this.flag){
+                idx=Math.max(Math.min(idx,sides.length-1),0);
+              } else {
+                idx=(idx%sides.length)+(idx<0 ? sides.length : 0);
+              }
+              if(sides[idx]){
+                return {
+                  currentSide: idx,
+                  imgsrc: sides[idx]
+                };
+              }
+              return {};
+            }
+
+            }
+
+          }
+        }
 
 
         ////////////////////////////////////////////////////////////
         // Colors
         ////////////////////////////////////////////////////////////
 
-		class Color {
-			static hsv2rgb(h, s, v) {
-				let r, g, b;
+        class Color {
+          static hsv2rgb(h, s, v) {
+            let r, g, b;
 
-				let i = Math.floor(h * 6);
-				let f = h * 6 - i;
-				let p = v * (1 - s);
-				let q = v * (1 - f * s);
-				let t = v * (1 - (1 - f) * s);
+            let i = Math.floor(h * 6);
+            let f = h * 6 - i;
+            let p = v * (1 - s);
+            let q = v * (1 - f * s);
+            let t = v * (1 - (1 - f) * s);
 
-				switch (i % 6) {
-					case 0: r = v, g = t, b = p; break;
-					case 1: r = q, g = v, b = p; break;
-					case 2: r = p, g = v, b = t; break;
-					case 3: r = p, g = q, b = v; break;
-					case 4: r = t, g = p, b = v; break;
-					case 5: r = v, g = p, b = q; break;
-				}
+            switch (i % 6) {
+              case 0: r = v, g = t, b = p; break;
+              case 1: r = q, g = v, b = p; break;
+              case 2: r = p, g = v, b = t; break;
+              case 3: r = p, g = q, b = v; break;
+              case 4: r = t, g = p, b = v; break;
+              case 5: r = v, g = p, b = q; break;
+            }
 
-				return { r , g , b };
-			}
+            return { r , g , b };
+          }
 
-			static rgb2hsv(r,g,b) {
-				let max = Math.max(r, g, b),
-					min = Math.min(r, g, b);
-				let h, s, v = max;
+          static rgb2hsv(r,g,b) {
+            let max = Math.max(r, g, b),
+            min = Math.min(r, g, b);
+            let h, s, v = max;
 
-				let d = max - min;
-				s = max == 0 ? 0 : d / max;
+            let d = max - min;
+            s = max == 0 ? 0 : d / max;
 
-				if (max == min) {
-					h = 0; // achromatic
-				} else {
-					switch (max) {
-						case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-						case g: h = (b - r) / d + 2; break;
-						case b: h = (r - g) / d + 4; break;
-					}
+            if (max == min) {
+              h = 0; // achromatic
+            } else {
+              switch (max) {
+                case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+                case g: h = (b - r) / d + 2; break;
+                case b: h = (r - g) / d + 4; break;
+              }
 
-					h /= 6;
-				}
+              h /= 6;
+            }
 
-				return { h, s, v };
-			}
+            return { h, s, v };
+          }
 
-			static dec2hex (n){
-				n = (Math.max(Math.min(Math.round(n*255),255), 0)||0);
-				return `${n<16?'0':''}${n.toString(16)}`;
-			}
+          static dec2hex (n){
+            n = (Math.max(Math.min(Math.round(n*255),255), 0)||0);
+            return `${n<16?'0':''}${n.toString(16)}`;
+          }
 
-			static hex2dec (n){
-				return Math.max(Math.min(parseInt(n,16),255), 0)/255;
-			}
+          static hex2dec (n){
+            return Math.max(Math.min(parseInt(n,16),255), 0)/255;
+          }
 
-			static html2rgb(htmlstring){
-				let s=htmlstring.toLowerCase().replace(/[^0-9a-f]/,'');
-				if(3===s.length){
-					s=`${s[0]}${s[0]}${s[1]}${s[1]}${s[2]}${s[2]}`;
-				}
-				return {
-					r: this.hex2dec(s.substr(0,2)),
-					g: this.hex2dec(s.substr(2,2)),
-					b: this.hex2dec(s.substr(4,2))
-				};
-			}
+          static html2rgb(htmlstring){
+            let s=htmlstring.toLowerCase().replace(/[^0-9a-f]/,'');
+            if(3===s.length){
+              s=`${s[0]}${s[0]}${s[1]}${s[1]}${s[2]}${s[2]}`;
+            }
+            return {
+              r: this.hex2dec(s.substr(0,2)),
+              g: this.hex2dec(s.substr(2,2)),
+              b: this.hex2dec(s.substr(4,2))
+            };
+          }
 
-			static parseRGBParam(p){
-				if(/\./.test(p)){
-					return parseFloat(p);
-				}
-				return parseInt(p,10)/255;
-			}
-			static parseHSVParam(p,f){
-				if(/\./.test(p)){
-					return parseFloat(p);
-				}
-				switch(f){
-					case 'h':
-						return parseInt(p,10)/360;
-					case 's':
-					case 'v':
-						return parseInt(p,10)/100;
-				}
-			}
+          static parseRGBParam(p){
+            if(/\./.test(p)){
+              return parseFloat(p);
+            }
+            return parseInt(p,10)/255;
+          }
+          static parseHSVParam(p,f){
+            if(/\./.test(p)){
+              return parseFloat(p);
+            }
+            switch(f){
+              case 'h':
+                return parseInt(p,10)/360;
+              case 's':
+              case 'v':
+                return parseInt(p,10)/100;
+            }
+          }
 
-			static parseColor(input){
-				return Color.buildColor(input.toLowerCase().match(colorReg));
-			}
-			static buildColor(parsed){
-				const idx = {
-					transparent: 1,
-					html: 2,
-					rgb: 3,
-					hsv: 4
-				};
+          static parseColor(input){
+            return Color.buildColor(`${input}`.toLowerCase().match(colorReg));
+          }
+          static buildColor(parsed){
+            const idx = {
+              transparent: 1,
+              html: 2,
+              rgb: 3,
+              hsv: 4
+            };
 
-				if(parsed){
-					let c = new Color();
-					if(parsed[idx.transparent]){
-						c.type = 'transparent';
-					} else if(parsed[idx.html]){
-						c.type = 'rgb';
-						_.each(Color.html2rgb(parsed[idx.html]),(v,k)=>{
-							c[k]=v;
-						});
-					} else if(parsed[idx.rgb]){
-						c.type = 'rgb';
-						let params = parsed[idx.rgb].match(colorParams);
-						c.r= Color.parseRGBParam(params[1]);
-						c.g= Color.parseRGBParam(params[2]);
-						c.b= Color.parseRGBParam(params[3]);
-					} else if(parsed[idx.hsv]){
-						c.type = 'hsv';
-						let params = parsed[idx.hsv].match(colorParams);
-						c.h= Color.parseHSVParam(params[1],'h');
-						c.s= Color.parseHSVParam(params[2],'s');
-						c.v= Color.parseHSVParam(params[3],'v');
-					} 
-					return c;
-				}
-				return new Color();
-			}
+            if(parsed){
+              let c = new Color();
+              if(parsed[idx.transparent]){
+                c.type = 'transparent';
+              } else if(parsed[idx.html]){
+                c.type = 'rgb';
+                _.each(Color.html2rgb(parsed[idx.html]),(v,k)=>{
+                  c[k]=v;
+                });
+              } else if(parsed[idx.rgb]){
+                c.type = 'rgb';
+                let params = parsed[idx.rgb].match(colorParams);
+                c.r= Color.parseRGBParam(params[1]);
+                c.g= Color.parseRGBParam(params[2]);
+                c.b= Color.parseRGBParam(params[3]);
+              } else if(parsed[idx.hsv]){
+                c.type = 'hsv';
+                let params = parsed[idx.hsv].match(colorParams);
+                c.h= Color.parseHSVParam(params[1],'h');
+                c.s= Color.parseHSVParam(params[2],'s');
+                c.v= Color.parseHSVParam(params[3],'v');
+              } 
+              return c;
+            }
+            return new Color();
+          }
 
-			constructor(){
-				this.type='transparent';
-			}
+          constructor(){
+            this.type='transparent';
+          }
 
-			clone(){
-				return Object.assign(new Color(), this);
-			}
+          clone(){
+            return Object.assign(new Color(), this);
+          }
 
-			toRGB(){
-				if('hsv'===this.type){
-					_.each(Color.hsv2rgb(this.h,this.s,this.v),(v,k)=>{
-						this[k]=v;
-					});
-					this.type='rgb';
-				} else if ('transparent' === this.type){
-					this.type='rgb';
-					this.r=0.0;
-					this.g=0.0;
-					this.b=0.0;
-				}
-				delete this.h;
-				delete this.s;
-				delete this.v;
-				return this;
-			}
+          toRGB(){
+            if('hsv'===this.type){
+              _.each(Color.hsv2rgb(this.h,this.s,this.v),(v,k)=>{
+                this[k]=v;
+              });
+              this.type='rgb';
+            } else if ('transparent' === this.type){
+              this.type='rgb';
+              this.r=0.0;
+              this.g=0.0;
+              this.b=0.0;
+            }
+            delete this.h;
+            delete this.s;
+            delete this.v;
+            return this;
+          }
 
-			toHSV(){
-				if('rgb'===this.type){
-					_.each(Color.rgb2hsv(this.r,this.g,this.b),(v,k)=>{
-						this[k]=v;
-					});
-					this.type='hsv';
-				} else if('transparent' === this.type){
-					this.type='hsv';
-					this.h=0.0;
-					this.s=0.0;
-					this.v=0.0;
-				}
+          toHSV(){
+            if('rgb'===this.type){
+              _.each(Color.rgb2hsv(this.r,this.g,this.b),(v,k)=>{
+                this[k]=v;
+              });
+              this.type='hsv';
+            } else if('transparent' === this.type){
+              this.type='hsv';
+              this.h=0.0;
+              this.s=0.0;
+              this.v=0.0;
+            }
 
-				delete this.r;
-				delete this.g;
-				delete this.b;
+            delete this.r;
+            delete this.g;
+            delete this.b;
 
-				return this;
-			}
+            return this;
+          }
 
-			toHTML(){
-				switch(this.type){
-					case 'transparent':
-						return 'transparent';
-					case 'hsv': {
-						return this.clone().toRGB().toHTML();
-					}
-					case 'rgb':
-						return `#${Color.dec2hex(this.r)}${Color.dec2hex(this.g)}${Color.dec2hex(this.b)}`;
-				}
-			}
-		}
+          toHTML(){
+            switch(this.type){
+              case 'transparent':
+                return 'transparent';
+              case 'hsv': {
+                return this.clone().toRGB().toHTML();
+              }
+            case 'rgb':
+              return `#${Color.dec2hex(this.r)}${Color.dec2hex(this.g)}${Color.dec2hex(this.b)}`;
+            }
+          }
+        }
 
-		class ColorOp extends Color {
+        class ColorOp extends Color {
 
-			constructor( op ) {
-				super();
-				this.operation = op;
-			}
+          constructor( op ) {
+            super();
+            this.operation = op;
+          }
 
-			static parseColor(input){
-				const idx = {
-					ops: 1,
-					transparent: 2,
-					html: 3,
-					rgb: 4,
-					hsv: 5
-				};
+          static parseColor(input){
+            const idx = {
+              ops: 1,
+              transparent: 2,
+              html: 3,
+              rgb: 4,
+              hsv: 5
+            };
 
-				let parsed = input.toLowerCase().match(colorOpReg)||[];
+            let parsed = `${input}`.toLowerCase().match(colorOpReg)||[];
 
-				if(parsed.length) {
-					return Object.assign(new ColorOp(parsed[idx.ops]||'='), Color.buildColor(parsed.slice(1)));
-				} else {
-					return Object.assign(new ColorOp(parsed[idx.ops]||(input.length ? '*':'=')), Color.parseColor('transparent'));
-				}
-			}
+            if(parsed.length) {
+              return Object.assign(new ColorOp(parsed[idx.ops]||'='), Color.buildColor(parsed.slice(1)));
+            } else {
+              return Object.assign(new ColorOp(parsed[idx.ops]||(input.length ? '*':'=')), Color.parseColor('transparent'));
+            }
+          }
 
-			applyTo(c){
-				if( !(c instanceof Color) ){
-					c = Color.parseColor(c);
-				}
-				switch(this.operation){
-					case '=':
-						return this;
-					case '!':
-						return ('transparent'===c.type ? this : Color.parseColor('transparent'));
-				}
-				switch(this.type){
-					case 'transparent':
-						return c;
-					case 'hsv':
-						c.toHSV();
-						switch(this.operation){
-							case '*':
-								c.h*=this.h;
-								c.s*=this.s;
-								c.v*=this.v;
-								c.toRGB();
-								return c;
-							case '+':
-								c.h+=this.h;
-								c.s+=this.s;
-								c.v+=this.v;
-								c.toRGB();
-								return c;
-							case '-':
-								c.h-=this.h;
-								c.s-=this.s;
-								c.v-=this.v;
-								c.toRGB();
-								return c;
-						}
-						break;
-					case 'rgb':
-						c.toRGB();
-						switch(this.operation){
-							case '*':
-								c.r*=this.r;
-								c.g*=this.g;
-								c.b*=this.b;
-								return c;
-							case '+':
-								c.r+=this.r;
-								c.g+=this.g;
-								c.b+=this.b;
-								return c;
-							case '-':
-								c.r-=this.r;
-								c.g-=this.g;
-								c.b-=this.b;
-								return c;
-						}
-				}
+          applyTo(c){
+            if( !(c instanceof Color) ){
+              c = Color.parseColor(c);
+            }
+            switch(this.operation){
+              case '=':
+                return this;
+              case '!':
+                return ('transparent'===c.type ? this : Color.parseColor('transparent'));
+            }
+            switch(this.type){
+              case 'transparent':
+                return c;
+              case 'hsv':
+                c.toHSV();
+                switch(this.operation){
+                  case '*':
+                    c.h*=this.h;
+                    c.s*=this.s;
+                    c.v*=this.v;
+                    c.toRGB();
+                    return c;
+                  case '+':
+                    c.h+=this.h;
+                    c.s+=this.s;
+                    c.v+=this.v;
+                    c.toRGB();
+                    return c;
+                  case '-':
+                    c.h-=this.h;
+                    c.s-=this.s;
+                    c.v-=this.v;
+                    c.toRGB();
+                    return c;
+                }
+                break;
+              case 'rgb':
+                c.toRGB();
+                switch(this.operation){
+                  case '*':
+                    c.r*=this.r;
+                    c.g*=this.g;
+                    c.b*=this.b;
+                    return c;
+                  case '+':
+                    c.r+=this.r;
+                    c.g+=this.g;
+                    c.b+=this.b;
+                    return c;
+                  case '-':
+                    c.r-=this.r;
+                    c.g-=this.g;
+                    c.b-=this.b;
+                    return c;
+                }
+            }
 
-				return c;
-			}
+            return c;
+          }
 
 
-			toString(){
-				let extra ='';
-				switch (this.type){
-					case 'transparent':
-						extra='(0.0, 0.0, 0.0, 1.0)';
-						break;
-					case 'rgb':
-						extra=`(${this.r},${this.g},${this.b})`;
-						break;
-					case 'hsv':
-						extra=`(${this.h},${this.s},${this.v})`;
-						break;
-				}
-				return `${this.operation} ${this.type}${extra} ${this.toHTML()}`;
-			}
+          toString(){
+            let extra ='';
+            switch (this.type){
+              case 'transparent':
+                extra='(0.0, 0.0, 0.0, 1.0)';
+                break;
+              case 'rgb':
+                extra=`(${this.r},${this.g},${this.b})`;
+                break;
+              case 'hsv':
+                extra=`(${this.h},${this.s},${this.v})`;
+                break;
+            }
+            return `${this.operation} ${this.type}${extra} ${this.toHTML()}`;
+          }
 
-		}
+        }
 
         ////////////////////////////////////////////////////////////
         // StatusMarkers
@@ -935,7 +996,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             }
 
             getHTML(scale = 1.4){
-                return `<div style="width: ${scale*.9}em; height: ${scale*.9}em; border-radius:${scale}em; display:inline-block; margin: 0 3px 0 0; border:0; background-color: ${this.color}"></div>`;
+                return `<div style="width: ${scale*.9}em; height: 1em; border-radius:${scale}em; display:inline-block; margin: 0 3px 0 0; border:0; background-color: ${this.color}; text-align: center; line-height: 1em;"></div>`;
             }
         }
 
@@ -1077,7 +1138,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             }
 
             static parse(status) {
-                let s = status.split(/:/);
+                let s = status.split(/[:;]/);
                 if(s.hasOwnProperty(1) && 0 === s[1].length){
                     s = [`${s[0]}::${s[2]}`,...s.slice(3)];
                 }
@@ -1202,8 +1263,99 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             }
         }
 
+
+        ////////////////////////////////////////////////////////////
+        // moveOp //////////////////////////////////////////////////
         ////////////////////////////////////////////////////////////
 
+        class moveOp {
+          static parse(args){
+            const identity = {getMods:() => ({})};
+            let angle = 0;
+            let relativeAngle = true;
+            let updateAngle = false;
+            let distance = 0;
+            let units = '';
+
+            if(args.length>1){
+              let match = args.shift().match(regex.moveAngle);
+              if(match) {
+                angle = transforms.degrees(match[2]);
+                relativeAngle = '='!==match[1];
+                updateAngle = '!'===match[3];
+              } else {
+                return identity;
+              }
+            }
+
+            {
+              let match = args.shift().match(regex.moveDistance);
+              if(match){
+                distance = match[1];
+                units = match[2];
+              } else {
+                return identity;
+              }
+            }
+            return new moveOp(
+              angle,
+              relativeAngle,
+              updateAngle,
+              distance,
+              units
+            );
+
+          }
+
+          constructor(angle,relativeAngle,updateAngle,distance,units){
+            this.angle = angle;
+            this.relativeAngle = relativeAngle;
+            this.updateAngle = updateAngle;
+            this.distance = distance;
+            this.units = units;
+          }
+
+          getMods(token,mods){
+            const getValue = (k) => mods.hasOwnProperty(k) ? mods[k] : token.get(k);
+            // find angle
+            // find postion from current by distance over angle.
+            // if current last move start with the token current position, update.
+            let angle = 0;
+            if(this.relativeAngle){
+              angle = parseFloat(getValue('rotation'));
+            }
+            angle = (transforms.degrees(angle+this.angle)||0);
+            let radAngle = (angle-90) * (Math.PI/180);
+
+            let page = getObj('page',token.get('pageid'));
+            if(page){
+              let distance = numberOp.ConvertUnitsPixel(this.distance,this.units,page);
+              let cx = getValue('left');
+              let cy = getValue('top');
+              let lm = getValue('lastmove');
+              if(mods.hasOwnProperty('lastmove')){
+                lm +=`,${cx},${cy}`;
+              } else {
+                lm = `${cx},${cy}`;
+              }
+
+              let x = cx+(distance*Math.cos(radAngle));
+              let y = cy+(distance*Math.sin(radAngle));
+              let props = {
+                lastmove: lm,
+                top: y,
+                left: x
+              };
+              if(this.updateAngle){
+                props.rotation = angle;
+              }
+              return props;
+            }
+            return {};
+          }
+        }
+
+        ////////////////////////////////////////////////////////////
 
 
 
@@ -1213,40 +1365,54 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                 tokenChange: []
         };
 
-        const getPageForPlayer =( pid ) => {
-            if(playerIsGM(pid)){
-                return  getObj('player',pid).get('lastpage');
+        const getActivePages = () => [...new Set([
+            Campaign().get('playerpageid'),
+            ...Object.values(Campaign().get('playerspecificpages')),
+            ...findObjs({
+                type: 'player',
+                online: true
+            })
+            .filter((p)=>playerIsGM(p.id))
+            .map((p)=>p.get('lastpage'))
+        ])
+        ];
+
+        const getPageForPlayer = (playerid) => {
+            let player = getObj('player',playerid);
+            if(playerIsGM(playerid)){
+                return player.get('lastpage') || Campaign().get('playerpageid');
             }
-            let ppages = Campaign().get('playerspecificpages');
-            if(ppages[pid]){
-                return ppages[pid];
+
+            let psp = Campaign().get('playerspecificpages');
+            if(psp[playerid]){
+                return psp[playerid];
             }
+
             return Campaign().get('playerpageid');
         };
 
-        const getActivePages = () => _.union([
-            Campaign().get('playerpageid')],
-            _.values(Campaign().get('playerspecificpages')),
-            _.chain(findObjs({
-                type: 'player',
-                online: true
-            }))
-            .filter((p)=>playerIsGM(p.id))
-            .map((p)=>p.get('lastpage'))
-            .value()
-        );
-
 
         const transforms = {
+            percentage: (p)=>{
+                  let n = parseFloat(p);
+                  if(!_.isNaN(n)){
+                    if(n > 1){
+                      n = Math.min(1,Math.max(n/100,0));
+                    } else {
+                      n = Math.min(1,Math.max(n,0));
+                    }
+                  }
+                  return n;
+                },
             degrees: function(t){
-                    var n = parseFloat(t,10);
+                    var n = parseFloat(t);
                     if(!_.isNaN(n)) {
                         n %= 360;
                     }
                     return n;
                 },
             circleSegment: function(t){
-                    var n = Math.abs(parseFloat(t,10));
+                    var n = Math.abs(parseFloat(t));
                     if(!_.isNaN(n)) {
                         n = Math.min(360,Math.max(0,n));
                     }
@@ -1287,20 +1453,23 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
     };
 
     const assureHelpHandout = (create = false) => {
+        if(state.TheAaron && state.TheAaron.config && (false === state.TheAaron.config.makeHelpHandouts) ){
+          return;
+        }
         const helpIcon = "https://s3.amazonaws.com/files.d20.io/images/127392204/tAiDP73rpSKQobEYm5QZUw/thumb.png?15878425385";
 
         // find handout
-        let props = {type:'handout', name:'Help: TokenMod'};
+        let props = {type:'handout', name:`Help: ${scriptName}`};
         let hh = findObjs(props)[0];
         if(!hh) {
             hh = createObj('handout',Object.assign(props, {inplayerjournals: "all", avatar: helpIcon}));
             create = true;
         }
-        if(create || version !== state.TokenMod.lastHelpVersion){
+        if(create || version !== state[scriptName].lastHelpVersion){
             hh.set({
                 notes: helpParts.helpDoc({who:'handout',playerid:'handout'})
             });
-            state.TokenMod.lastHelpVersion = version;
+            state[scriptName].lastHelpVersion = version;
             log('  > Updating Help Handout to v'+version+' <');
         }
     };
@@ -1403,8 +1572,8 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             '[' : '#91',
             ']' : '#93',
             '"' : 'quot',
-			'*' : 'ast',
-			'/' : 'sol',
+            '*' : 'ast',
+            '/' : 'sol',
             ' ' : 'nbsp'
         };
 
@@ -1444,10 +1613,10 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
         ol: (...o) => `<ol>${_h.items(o)}</ol>`,
         ul: (...o) => `<ul>${_h.items(o)}</ul>`,
         grid: (...o) => `<div style="padding: 12px 0;">${o.join('')}<div style="clear:both;"></div></div>`, 
-        cell: (o) =>  `<div style="width: 160px; padding: 0 3px; float: left;">${o}</div>`,
+        cell: (o) =>  `<div style="width: 200px; padding: 0 3px; float: left;">${o}</div>`,
         statusCell: (o) =>  {
-            let text = `${o.getName()}${o.getName()!==o.getTag()?` [${o.getTag()}]`:''}`;
-            return `<div style="width: auto; padding: .2em; margin: .1em .25em; border: 1px solid #ccc; border-radius: .25em; background-color: #eee; line-height:1.5em; height: 1.5em;float:left;">${o.getHTML()}${text}</div>`;
+            let text = `${o.getName()}${o.getName()!==o.getTag()?` [${_h.code(o.getTag())}]`:''}`;
+            return `<div style="width: auto; padding: .2em; margin: .1em .25em; border: 1px solid #ccc; border-radius: .25em; background-color: #eee; line-height:1.5em; height: auto;float:left;">${o.getHTML()}${text}</div>`;
         },
         inset: (...o) => `<div style="padding-left: 10px;padding-right:20px">${o.join(' ')}</div>`,
         join: (...o) => o.join(' '),
@@ -1479,11 +1648,13 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                                 `--ignore-selected`,
                                 `--current-page`,
                                 `--active-pages`,
+                                `--api-as`,
                                 `--config`,
                                 `--on`,
                                 `--off`,
                                 `--flip`,
                                 `--set`,
+                                `--move`,
                                 `--report`,
                                 `--order`
                             ),
@@ -1521,11 +1692,13 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                             `${_h.bold('--ignore-selected')} -- Prevents modifications to the selected tokens (only modifies tokens passed with --ids).`,
                             `${_h.bold('--current-page')} -- Only modifies tokens on the calling player${ch("'")}s current page.  This is particularly useful when passing character_ids to ${_h.italic('--ids')}.`,
                             `${_h.bold('--active-pages')} -- Only modifies tokens on pages where there is a player or the GM.  This is particularly useful when passing character_ids to ${_h.italic('--ids')}.`,
+                            `${_h.bold('--api-as')} ${_h.required('playerid')} -- Sets the player id to use as the player when the API is calling the script.`,
                             `${_h.bold('--config')} -- Sets Config options. `,
                             `${_h.bold('--on')} -- Turns on any of the specified parameters (See ${_h.bold('Boolean Arguments')} below).`,
                             `${_h.bold('--off')} -- Turns off any of the specified parameters (See ${_h.bold('Boolean Arguments')} below).`,
                             `${_h.bold('--flip')} -- Flips the value of any of the specified parameters (See ${_h.bold('Boolean Arguments')} below).`,
                             `${_h.bold('--set')} -- Each parameter is treated as a key and value, divided by a ${_h.code('|')} character.  Sets the key to the value.  If the value has spaces, you must enclose it ${_h.code(ch("'"))} or ${_h.code(ch('"'))}. See below for specific value handling logic.`,
+                            `${_h.bold('--move')} -- Moves each token in a direction and distance based on its facing.`,
                             `${_h.bold('--order')} -- Changes the ordering of tokens.  Specify one of ${_h.code('tofront')}, ${_h.code('front')}, ${_h.code('f')}, ${_h.code('top')} to bring something to the front or ${_h.code('toback')}, ${_h.code('back')}, ${_h.code('b')}, ${_h.code('bottom')} to push it to the back.`,
                             `${_h.bold('--report')} -- Displays a report of what changed for each token. ${_h.experimental()}`,
                             `${_h.bold('--ids')} -- Each parameter is a Token ID, usually supplied with something like ${_h.attr.target(`Target 1${ch('|')}token_id`)}. By default, only a GM can use this argument.  You can enable players to use it as well with ${_h.bold('--config players-can-ids|on')}.`
@@ -1541,6 +1714,41 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                         _h.paragraph(`${_h.italic('--ignore-selected')} can be used when you want to be sure selected tokens are not affected.  This is particularly useful when specifying the id of a known token, such as moving a graphic from the gm layer to the objects layer, or coloring an object on the map.`)
                     )
                 ),
+        move: (/* context */) => _h.join(
+                _h.section('Move',
+                  _h.paragraph(`Use ${_h.code('--move')} to supply a sequence of move operations to apply to a token.  By default, moves are relative to the current facing of the token as defined by the rotation handle (generally, the "up" direction when the token is unrotated).  Each operation can be either a distance, or a rotation followed by a distance, separated by a pipe ${_h.code('|')}.  Distances can use the unit specifiers (${_h.code('g')},${_h.code('u')},${_h.code('ft')},etc -- see the ${_h.bold('Numbers')} section for more) and may be positive or negative.  Rotations can be positive or negative.  They can be prefaced by a ${_h.code('=')} to ignore the current rotation of the character and instead move based on up being 0.  They can further be followed by a ${_h.code('!')} to also rotate the token to the new direction.`),
+                  _h.paragraph(`Moving 3 grid spaces in the current facing.`),
+                  _h.inset(
+                    _h.preformatted(
+                      '!token-mod --move 3g'
+                    )
+                  ),
+                  _h.paragraph(`Moving 3 grid spaces at 45 degrees to the current facing.`),
+                  _h.inset(
+                    _h.preformatted(
+                      '!token-mod --move 45|3g'
+                    )
+                  ),
+                  _h.paragraph(`Moving 2 units to the right, ignoring the current facing.`),
+                  _h.inset(
+                    _h.preformatted(
+                      '!token-mod --move =90|2u'
+                    )
+                  ),
+                  _h.paragraph(`Moving 10ft in the direction 90 degrees to the left of the current facing, and updating the facing to that new direction.`),
+                  _h.inset(
+                    _h.preformatted(
+                      '!token-mod --move -90!|10ft'
+                    )
+                  ),
+                  _h.paragraph(`Moving forward 2 grid spaces, then right 10ft, then 3 units at 45 degrees to the current facing and updating to that face that direction. `),
+                  _h.inset(
+                    _h.preformatted(
+                      '!token-mod --move 2g 90|10ft =45!|3u'
+                    )
+                  )
+                )
+              ),
 
         booleans: (/* context */) => _h.join(
                 // SECTION: --on, --off, --flip, etc...
@@ -1575,6 +1783,10 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                             _h.cell(''),
 
                             _h.cell("has_bright_light_vision"),
+                            _h.cell("has_limit_field_of_vision"),
+                            _h.cell("has_limit_field_of_night_vision"),
+                            _h.cell("has_directional_bright_light"),
+                            _h.cell("has_directional_low_light"),
                             _h.cell("bright_vision"),
                             _h.cell("has_night_vision"),
                             _h.cell("night_vision"),
@@ -1603,6 +1815,26 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                 )
             ),
 
+        setPercentage: (/* context*/) => _h.join(
+                    _h.subhead('Percentage'),
+                    _h.inset(
+                        _h.paragraph(`Percentage values can be a floating point number between 0 and 1.0, such as ${_h.code('0.35')}, or an integer number between 1 and 100.`),
+                        _h.minorhead('Available Percentage Properties:'),
+                        _h.inset(
+                            _h.grid(
+                                _h.cell('dim_light_opacity'),
+                            )
+                        ),
+                        _h.paragraph(`Setting the low light opacity to 30%:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set dim_light_opacity|30' )
+                        ),
+                        _h.inset(
+                            _h.pre( '!token-mod --set dim_light_opacity|0.3' )
+                        )
+                    )
+                ),
+
         setNumbers: (/* context*/) => _h.join(
                     _h.subhead('Numbers'),
                     _h.inset(
@@ -1614,7 +1846,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                                 _h.cell('top'),
                                 _h.cell('width'),
                                 _h.cell('height'),
-                                _h.cell('scale')
+                                _h.cell('scale'),
                             )
                         ),
                         _h.paragraph( `It${ch("'")}s probably a good idea not to set the location of a token off screen, or the width or height to 0.`),
@@ -1707,7 +1939,11 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     _h.minorhead('Available Degrees Properties:'),
                     _h.inset(
                         _h.grid(
-                            _h.cell('rotation')
+                            _h.cell('rotation'),
+                            _h.cell("limit_field_of_vision_center"),
+                            _h.cell("limit_field_of_night_vision_center"),
+                            _h.cell("directional_bright_light_center"),
+                            _h.cell("directional_low_light_center")
                         )
                     ),
                     _h.paragraph('Rotating a token by 180 degrees.'),
@@ -1725,7 +1961,11 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     _h.inset(
                         _h.grid(
                             _h.cell('light_angle'),
-                            _h.cell('light_losangle')
+                            _h.cell('light_losangle'),
+                            _h.cell("limit_field_of_vision_total"),
+                            _h.cell("limit_field_of_night_vision_total"),
+                            _h.cell("directional_bright_light_total"),
+                            _h.cell("directional_low_light_total")
                         )
                     ),
                     _h.paragraph('Setting line of sight angle to 90 degrees.'),
@@ -1752,7 +1992,8 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                         _h.grid(
                             _h.cell('tint_color'),
                             _h.cell('aura1_color'),
-                            _h.cell('aura2_color')
+                            _h.cell('aura2_color'),
+                            _h.cell('night_vision_tint')
                         )
                     ),
                     _h.paragraph('Turning off the tint and setting aura1 to a reddish color.  All of the following are the same:'),
@@ -1835,6 +2076,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     _h.inset(
                         _h.pre(`!token-mod --set name|${ch('"')}Sir Thomas${ch('"')} bar1_value|23`)
                     ),
+                    _h.paragraph(`Setting a bar to a numeric value will be treated as a relative change if prefaced by ${_h.code('+')}, ${_h.code('-')}, ${_h.code(ch('*'))}, or ${_h.code('/')}, or will be explicitly set when prefaced with a ${_h.code('=')}.  If you are setting a bar value, you can append a ${_h.code('!')} to the value to force it to be bounded between ${_h.code('0')} and ${_h.code('max')} for the bar.`),
                     _h.paragraph(`${_h.italic('bar1')}, ${_h.italic('bar2')} and ${_h.italic('bar3')} are special.  Any value set on them will be set in both the ${_h.italic('_value')} and ${_h.italic('_max')} fields for that bar.  This is most useful for setting hit points, particularly if the value comes from an inline roll.`),
                     _h.inset(
                         _h.pre(`!token-mod --set bar1|${ch('[')}${ch('[')}3d6+8${ch(']')}${ch(']')}`)
@@ -1892,6 +2134,11 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     ),
                     _h.paragraph(`${_h.bold('Note:')} TokenMod will now show 0 on status markers everywhere that makes sense to do.`),
 
+                    _h.paragraph(`You can use a semicolon (${_h.code(';')}) in place of a colon (${_h.code(':')}) to allow setting statuses with numbers from API Buttons.`),
+                    _h.inset(
+                        _h.pre('[Set some statuses](!token-mod --set statusmarkers|blue;0|red;3|green|padlock;2|broken-shield;7)')
+                    ),
+
                     _h.paragraph(`The numbers following a status can be prefaced with a ${_h.code('+')} or ${_h.code('-')}, which causes their value to be applied to the current value. Here${ch("'")}s an example showing blue getting incremented by 2, and padlock getting decremented by 1.  Values will be bounded between 0 and 9.`),
                     _h.inset(
                         _h.pre('!token-mod --set statusmarkers|blue:+2|padlock:-1')
@@ -1948,17 +2195,26 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                         _h.pre('!token-mod --set statusmarkers|-blue[]')
                     ),
 
+                    _h.paragraph('All of these operations can be combine in a single statusmarkers command.'),
+                    _h.inset(
+                        _h.pre('!token-mod --set statusmarkers|blue:3|-dead|red:3')
+                    ),
+
                     _h.minorhead('Available Status Markers:'),
                     _h.inset(
                         _h.grid(
                             ...StatusMarkers.getOrderedList().map(tm=>_h.statusCell(tm))
                         )
                     ),
-
-                    _h.paragraph('All of these operations can be combine in a single statusmarkers command.'),
+                    _h.paragraph(`Status Markers with a space in the name must be specified using the tag name, which appears in ${_h.code('[')}${_h.code(']')} above.`),
                     _h.inset(
-                        _h.pre('!token-mod --set statusmarkers|blue:3|-dead|red:3')
+                        _h.pre('!token-mod --set statusmarkers|Mountain_Pass::1234568')
+                    ),
+                    _h.paragraph(`You can use a semicolon (${_h.code(';')}) in place of a colon (${_h.code(':')}) to allow setting statuses with numbers from API Buttons.`),
+                    _h.inset(
+                        _h.pre('[3 Mountain Pass](!token-mod --set statusmarkers|Mountain_Pass;;1234568;3)')
                     )
+
                 )
             ),
 
@@ -2129,7 +2385,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                         _h.pre('!token-mod --set currentside|?-30')
                     ),
 
-                    _h.paragraph(`If you want to chose a random image, you can use ${_h.code(ch('*'))}.  This will choose one of the valid images at random (all equally weighted):`),
+                    _h.paragraph(`If you want to choose a random image, you can use ${_h.code(ch('*'))}.  This will choose one of the valid images at random (all equally weighted):`),
                     _h.inset(
                         _h.pre(`!token-mod --set currentside|${ch('*')}`)
                     )
@@ -2326,6 +2582,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     _h.paragraph('There are several types of keys with special value formats:'),
                     _h.inset(
                         helpParts.setNumbers(context),
+                        helpParts.setPercentage(context),
                         helpParts.setNumbersOrBlank(context),
                         helpParts.setDegrees(context),
                         helpParts.setCircleSegment(context),
@@ -2445,6 +2702,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                 helpParts.commands(context),
                 helpParts.booleans(context),
                 helpParts.sets(context),
+                helpParts.move(context),
                 helpParts.reports(context),
                 helpParts.config(context),
                 helpParts.apiInterface(context)
@@ -2551,14 +2809,18 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     retr[cmd].push(numberOp.parse(cmd,args.shift(),false));
                     break;
 
+                case 'percentage':
+                    retr[cmd].push(numberOp.parse(cmd,transforms.percentage(args.shift()),false));
+                    break;
+
                 case 'degrees':
                     if( '=' === args[0][0] ) {
                         t='=';
-                        args[0]=_.rest(args[0]);
+                        args[0]=args[0].slice(1);
                     } else {
                         t='';
                     }
-                    retr[cmd].push(t+(_.contains(['-','+'],args[0][0]) ? args[0][0] : '') + Math.abs(transforms.degrees(args.shift())));
+                    retr[cmd].push(t+(['-','+'].includes(args[0][0]) ? args[0][0] : '') + Math.abs(transforms.degrees(args.shift())));
                     break;
 
                 case 'circleSegment':
@@ -2582,36 +2844,34 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     retr[cmd].push('');
                     break;
 
-				case 'sideNumber':
-					{
-						let c = sideNumberOp.parseSideNumber(args.shift());
-						if(c){
-							retr[cmd].push(c);
-						} else {
-							retr = undefined;
-						}
-					}
-					
-					break;
-                case 'image':
-					{
-						let c = imageOp.parseImage(args.shift());
-						if(c){
-							retr[cmd].push(c);
-						} else {
-							retr = undefined;
-						}
-					}
+                  case 'sideNumber': {
+                      let c = sideNumberOp.parseSideNumber(args.shift());
+                      if(c){
+                        retr[cmd].push(c);
+                      } else {
+                        retr = undefined;
+                      }
+                    }
                     break;
 
-                case 'color': {
-						let c = ColorOp.parseColor(args.shift());
-						if(c){
-							retr[cmd].push(c);
-						} else {
-							retr = undefined;
-						}
-					}
+                  case 'image': {
+                      let c = imageOp.parseImage(args.shift());
+                      if(c){
+                        retr[cmd].push(c);
+                      } else {
+                        retr = undefined;
+                      }
+                    }
+                    break;
+
+                  case 'color': {
+                      let c = ColorOp.parseColor(args.shift());
+                      if(c){
+                        retr[cmd].push(c);
+                      } else {
+                        retr = undefined;
+                      }
+                    }
                     break;
 
                 case 'character_id':
@@ -2741,12 +3001,21 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             .value();
     };
 
+    const parseMoveArguments = (list,base) =>
+        list
+            .reduce((m,a)=>{
+                let args=a.replace(/(\|#|##)/g,'|%%HASHMARK%%').split(/[|#]/).map((v)=>v.replace('%%HASHMARK%%','#'));
+                m.push(moveOp.parse(args));
+                return m;
+            },base)
+            ;
+
     const parseReportArguments = (list,base) =>
         list
             .filter(filters.hasArgument)
             .reduce((m,a)=>{
                 let args=a.replace(/(\|#|##)/g,'|%%HASHMARK%%').split(/[|#]/).map((v)=>v.replace('%%HASHMARK%%','#'));
-                let whose=args.shift().toLowerCase().split(/:/);
+                let whose=args.shift().toLowerCase().split(/[:;]/);
                 let msg = args.shift();
                 if(/^(".*")|('.*')$/.test(msg)){
                     msg=msg.slice(1,-1);
@@ -2814,6 +3083,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     } else {
                         mods[k]=controlList.join(',');
                     }
+                    forceLightUpdateOnPage(token.get('pageid'));
                     break;
 
                 case 'defaulttoken':
@@ -2857,6 +3127,10 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     break;
 
 
+                case 'dim_light_opacity':
+                    mods = Object.assign( mods, f[0].getMods(token,mods));
+                    break;
+
                 case 'left':
                 case 'top':
                 case 'width':
@@ -2865,14 +3139,22 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     break;
 
                 case 'rotation':
+                case 'limit_field_of_vision_center':
+                case 'limit_field_of_night_vision_center':
+                case 'directional_bright_light_center':
+                case 'directional_low_light_center':
                     delta=getRelativeChange(token.get(k),f[0]);
                     if(_.isNumber(delta)) {
-                        mods[k]=(delta%360);
+                        mods[k]=(((delta%360)+360)%360);
                     }
                     break;
 
                 case 'light_angle':
                 case 'light_losangle':
+                case 'limit_field_of_vision_total':
+                case 'limit_field_of_night_vision_total':
+                case 'directional_bright_light_total':
+                case 'directional_low_light_total':
                     delta=getRelativeChange(token.get(k),f[0]);
                     if(_.isNumber(delta)) {
                         mods[k] = Math.min(360,Math.max(0,delta));
@@ -2897,17 +3179,26 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                 case 'bar1_reset':
                 case 'bar2_reset':
                 case 'bar3_reset': {
-						let field = k.replace(/_reset$/,'_max');
-						delta = mods[field] || token.get(field);
-						if(!_.isUndefined(delta)) {
-							mods[k.replace(/_reset$/,'_value')]=delta;
-						}
-					}
-                    break;
+                    let field = k.replace(/_reset$/,'_max');
+                    delta = mods[field] || token.get(field);
+                    if(!_.isUndefined(delta)) {
+                      mods[k.replace(/_reset$/,'_value')]=delta;
+                    }
+                  }
+                  break;
 
                 case 'bar1_value':
                 case 'bar2_value':
                 case 'bar3_value':
+                    delta=getRelativeChange(token.get(k),f[0]);
+                    if(_.isNumber(delta) || _.isString(delta)) {
+                      if(/!$/.test(f[0])) {
+                        delta = Math.max(0,Math.min(delta,token.get(k.replace(/_value$/,'_max'))));
+                      }
+                      mods[k]=delta;
+                    }
+                    break;
+
                 case 'bar1_max':
                 case 'bar2_max':
                 case 'bar3_max':
@@ -2918,25 +3209,32 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     }
                     break;
 
-				case 'currentSide':
-				case 'currentside':
-					mods = Object.assign( mods, f[0].getMods(token,mods));
-					break;
-				case 'imgsrc':
-					mods = Object.assign( mods, f[0].getMods(token,mods));
-					break;
+                  case 'currentSide':
+                  case 'currentside':
+                    mods = Object.assign( mods, f[0].getMods(token,mods));
+                    break;
+                  case 'imgsrc':
+                    mods = Object.assign( mods, f[0].getMods(token,mods));
+                    break;
 
-				case 'aura1_color':
-				case 'aura2_color':
-				case 'tint_color':
+                  case 'aura1_color':
+                  case 'aura2_color':
+                  case 'tint_color':
+                  case 'night_vision_tint':
                     mods[k]=f[0].applyTo(token.get(k)).toHTML();
-					break;
+                    break;
 
                 default:
                     mods[k]=f[0];
                     break;
             }
         });
+
+      // move ops
+        _.each(modlist.move,function(f){
+          mods = Object.assign(mods, f.getMods(token,mods));
+        });
+
         token.set(mods);
         notifyObservers('tokenChange',token,ctx.prev);
         return ctx;
@@ -2985,9 +3283,57 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             }
         };
 
+        const HE = (() => {
+            const esRE = (s) => s.replace(/(\\|\/|\[|\]|\(|\)|\{|\}|\?|\+|\*|\||\.|\^|\$)/g,'\\$1');
+            const e = (s) => `&${s};`;
+            const entities = {
+                '<' : e('lt'),
+                '>' : e('gt'),
+                "'" : e('#39'),
+                '@' : e('#64'),
+                '{' : e('#123'),
+                '|' : e('#124'),
+                '}' : e('#125'),
+                '[' : e('#91'),
+                ']' : e('#93'),
+                '"' : e('quot')
+            };
+            const re = new RegExp(`(${Object.keys(entities).map(esRE).join('|')})`,'g');
+            return (s) => s.replace(re, (c) => (entities[c] || c) );
+        })();
+
+        const getChange = (()=> {
+          const charName = (cid) => (getObj('character',cid)||{get:()=>'[Missing]'}).get('name');
+          const attrName = (aid) => (/^sheetattr_/.test(aid) ? aid.replace(/^sheetattr_/,'') : (getObj('attribute',aid)||{get:()=>'[Missing]'}).get('name'));
+          const playerName = (pid) => (getObj('player',pid)||{get:()=>pid}).get('_displayname');
+          const nameList = (pl) => pl.split(/\s*,\s*/).filter(s=>s.length).map(playerName).join(', ');
+          const boolName = (b) => (b ? 'true' : 'false');
+          
+          const diffNum = (was,is) => is-was;
+          const showDiff = (was,is) => `${was} -> ${is}`;
+          const funcs = {
+            boolean:  (was,is) => showDiff(boolName(was),boolName(is)), 
+            number: diffNum,
+            degrees: diffNum,
+            circleSegment: diffNum,
+            numberBlank: diffNum,
+            sideNumber: diffNum,
+            text: (was,is) => showDiff(was,is),
+            status: (was,is) => showDiff(was,is),
+            layer: (was,is) => showDiff(was,is),
+            character_id: (was,is) => showDiff(charName(was),charName(is)),
+            attribute: (was,is) => showDiff(attrName(was),attrName(is)),
+            player: (was,is) => showDiff(nameList(was),nameList(is)),
+            defaulttoken: (was,is) => showDiff(HE(was),HE(is))
+          };
+
+          return (type,was,is) => (funcs.hasOwnProperty(type) ? funcs[type] : ()=>'[not supported]')(was,is);
+
+        })();
+
         reports.forEach( r =>{
             let pmsg = r.msg.replace(/\{(.+?)\}/g, (m,n)=>{
-                let parts=n.toLowerCase().split(/:/);
+                let parts=n.toLowerCase().split(/[:;]/);
                 let prop=unalias(parts[0]);
                 let t = getTransform(prop);
     
@@ -3001,7 +3347,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                         return t(Math.abs((parseFloat(ctx.token.get(prop))||0) - (parseFloat(ctx.prev[prop]||0))));
 
                     case 'change':
-                        return t((parseFloat(ctx.token.get(prop))||0) - (parseFloat(ctx.prev[prop]||0)));
+                        return t(getChange((fields[prop]||{type:'unknown'}).type,ctx.prev[prop],ctx.token.get(prop)));
 
                     default:
                         return t(ctx.token.get(prop));
@@ -3108,6 +3454,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     on: [],
                     off: [],
                     set: {},
+                    move: [],
                     order: []
                 };
             let reports=[];
@@ -3205,8 +3552,13 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                             case 'order':
                                 modlist.order=parseOrderArguments(cmds,modlist.order);
                                 break;
+
                             case 'report':
                                 reports= parseReportArguments(cmds,reports);
+                                break;
+
+                            case 'move':
+                                modlist.move = parseMoveArguments(cmds,modlist.move);
                                 break;
 
                             case 'ignore-selected':
@@ -3278,7 +3630,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     `<div style="margin: .1em 1em 1em 1em;"><code>${msg_orig.content}</code></div>`+
                     `<div>Please <a class="showtip tipsy" title="The Aaron's profile on Roll20." style="color:blue; text-decoration: underline;" href="https://app.roll20.net/users/104025/the-aaron">send me this information</a> so I can make sure this doesn't happen again (triple click for easy select in most browsers.):</div>`+
                     `<div style="font-size: .6em; line-height: 1em;margin:.1em .1em .1em 1em; padding: .1em .3em; color: #666666; border: 1px solid #999999; border-radius: .2em; background-color: white;">`+
-                        JSON.stringify({msg: msg_orig, version:version, stack: e.stack})+
+                        JSON.stringify({msg: msg_orig, version:version, stack: e.stack, API_Meta})+
                     `</div>`+
                 `</div>`
             );
@@ -3301,6 +3653,4 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
     };
 })();
 
-
-
-
+{try{throw new Error('');}catch(e){API_Meta.TokenMod.lineCount=(parseInt(e.stack.split(/\n/)[1].replace(/^.*:(\d+):.*$/,'$1'),10)-API_Meta.TokenMod.offset);}}
