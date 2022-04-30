@@ -1,21 +1,22 @@
 // Github:   https://github.com/shdwjk/Roll20API/blob/master/TokenMod/TokenMod.js
 // By:       The Aaron, Arcane Scriptomancer
 // Contact:  https://app.roll20.net/users/104025/the-aaron
-var API_Meta = API_Meta||{};
+var API_Meta = API_Meta||{}; // eslint-disable-line no-var
 API_Meta.TokenMod={offset:Number.MAX_SAFE_INTEGER,lineCount:-1};
 {try{throw new Error('');}catch(e){API_Meta.TokenMod.offset=(parseInt(e.stack.split(/\n/)[1].replace(/^.*:(\d+):.*$/,'$1'),10)-6);}}
 
 const TokenMod = (() => { // eslint-disable-line no-unused-vars
 
     const scriptName = "TokenMod";
-    const version = '0.8.64';
+    const version = '0.8.74';
     API_Meta.TokenMod.version = version;
-    const lastUpdate = 1613710516;
+    const lastUpdate = 1646271161;
     const schemaVersion = 0.4;
 
     const fields = {
             // booleans
             showname: {type: 'boolean'},
+            show_tooltip: {type: 'boolean'},
             showplayers_name: {type: 'boolean'},
             showplayers_bar1: {type: 'boolean'},
             showplayers_bar2: {type: 'boolean'},
@@ -35,6 +36,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             fliph: {type: 'boolean'},
             aura1_square: {type: 'boolean'},
             aura2_square: {type: 'boolean'},
+            lockMovement: {type: 'boolean'},
 
             // UDL settings
             has_bright_light_vision: {type: 'boolean'},
@@ -45,6 +47,8 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             has_limit_field_of_night_vision: {type: 'boolean'},
             has_directional_bright_light: {type: 'boolean'},
             has_directional_low_light: {type: 'boolean'},
+            light_sensitivity_multiplier: {type: 'number'},
+            night_vision_effect: {type: 'option'},
             
 
             // bounded by screen size
@@ -99,15 +103,21 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             bar2_reset: {type: 'text'},
             bar3_reset: {type: 'text'},
 
+            bar_location: {type: 'option'},
+            compact_bar: {type: 'option'},
+
 
             // colors
             aura1_color: {type: 'color'},
             aura2_color: {type: 'color'},
             tint_color: {type: 'color'},
             night_vision_tint: {type: 'color'},
+            lightColor: {type: 'color'},
 
             // Text : special
             name: {type: 'text'},
+            tooltip: {type: 'text'},
+
             statusmarkers: {type: 'status'},
             layer: {type: 'layer'},
             represents: {type: 'character_id'},
@@ -136,14 +146,18 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             bright_distance: "bright_light_distance",    
             low_distance: "low_light_distance",
             low_light_opacity: "dim_light_opacity",
-            currentside: "currentSide"   // fix for case issue
+            currentside: "currentSide",   // fix for case issue
+            lightcolor: "lightColor", // fix for case issue
+            light_color: "lightColor", // fix for case issue
+            lockmovement: "lockMovement", // fix for case issue
+            lock_movement: "lockMovement" // fix for case issue
         };
 
     const reportTypes = [
             'gm', 'player', 'all', 'control', 'token', 'character'
         ];
 
-    const propBool = {
+    const probBool = {
       couldbe:   ()=>(randomInteger(8)<=1),
       sometimes: ()=>(randomInteger(8)<=2),
       maybe:     ()=>(randomInteger(8)<=4),
@@ -160,7 +174,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
         };
 
     const getCleanImgsrc = (imgsrc) => {
-      var parts = imgsrc.match(/(.*\/images\/.*)(thumb|med|original|max)([^?]*)(\?[^?]+)?$/);
+      let parts = imgsrc.match(/(.*\/images\/.*)(thumb|med|original|max)([^?]*)(\?[^?]+)?$/);
       if(parts) {
         return parts[1]+'thumb'+parts[3]+(parts[4]?parts[4]:`?${Math.round(Math.random()*9999999)}`);
       }
@@ -183,10 +197,106 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
         };
     })();
 
+    const option_fields = {
+      night_vision_effect: {
+        __default__: ()=>()=>'None',
+        off: ()=>()=>'None',
+        ['none']: ()=>()=>'None',
+        ['dimming']: (amount='5ft')=>(token,mods)=>{
+          const regexp = /^([=+\-/*])?(-?\d+\.?|\d*\.\d+)(u|g|s|ft|m|km|mi|in|cm|un|hex|sq|%)?$/i;
+          let match = `${amount}`.match(regexp);
+          let factor;
+          let pnv;
+          if(mods.hasOwnProperty('night_vision_distance')){
+            pnv = mods.night_vision_distance;
+          } else {
+            pnv = token.get('night_vision_distance');
+          }
+
+          let dp;
+          if(mods.hasOwnProperty('night_vision_effect') && /^Dimming_/.test(mods.night_vision_effect)){
+            dp = (parseFloat(mods.night_vision_effect.replace(/^Dimming_/,''))||0)*pnv;
+          } else if(/^Dimming_/.test(token.get('night_vision_effect'))){
+            dp = (parseFloat(token.get('night_vision_effect').replace(/^Dimming_/,''))||0)*pnv;
+          }
+
+          if(match){
+            let dist;
+            switch(match[3]){
+
+              // handle percentage
+              case '%': {
+                  let p = parseFloat(match[2])||0;
+                  if(p>1){
+                    p*=.01;
+                  }
+                  p = Math.min(1,p);
+                
+                  dist = p*pnv;
+                }
+                break;
+
+              // handle units
+              default: {
+                  let page=getObj('page',token.get('pageid'));
+                  if(page){
+                    dist = numberOp.ConvertUnitsRoll20(match[2],match[3],page);
+                  }
+                  else {
+                    dist=5;
+                  }
+                }
+                break;
+            }
+            switch(match[1]){
+              default:
+              case '=':
+                factor=(dist/pnv);
+                break;
+
+              case '+':
+                factor=((dist+dp)/pnv);
+                break;
+              case '-':
+                factor=((dp-dist)/pnv);
+                break;
+              case '*':
+                factor=((dist*dp)/pnv);
+                break;
+              case '/':
+                factor=((dp/dist)/pnv);
+                break;
+            }
+          } else {
+            factor=(5/pnv);
+          }
+
+          return `Dimming_${Math.min(1,Math.max(0,factor))}`;
+        },
+        ['nocturnal']: ()=>()=>'Nocturnal'
+      },
+      bar_location: {
+        __default__: ()=>null,
+        off: ()=>null,
+        none: ()=>null,
+        ['above']: ()=>null,
+        ['overlap_top']: ()=>'overlap_top',
+        ['overlap_bottom']: ()=>'overlap_bottom',
+        ['below']: ()=>'below'
+      },
+      compact_bar: {
+        __default__: ()=>null,
+        off: ()=>null,
+        none: ()=>null,
+        ['compact']: ()=>'compact',
+        ['on']: ()=>'compact'
+      }
+    };
+
     const regex = {
       moveAngle: /^(=)?([+-]?(?:0|[1-9][0-9]*))(!)?$/,
       moveDistance: /^([+-]?\d+\.?|\d*\.\d+)(u|g|s|ft|m|km|mi|in|cm|un|hex|sq)?$/i,
-      numberString: /^[-+*/]?(0|[1-9][0-9]*)([.]+[0-9]*)?([eE][+-]?[0-9]+)?$/,
+      numberString: /^[-+*/=]?[-+]?(0|[1-9][0-9]*)([.]+[0-9]*)?([eE][-+]?[0-9]+)?(!)?$/,
       stripSingleQuotes: /'([^']+(?='))'/g,
       stripDoubleQuotes: /"([^"]+(?="))"/g,
       layers: /^(?:gmlayer|objects|map|walls)$/,
@@ -318,6 +428,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                         break;
 
                     case 'light_multiplier':
+                    case 'light_sensitivity_multiplier':
                         break;
 
                 }
@@ -327,14 +438,43 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
 
                 let adjuster = (a)=>a;
 
-                if(this.enforce){
-                  switch(this.field){
+                switch(this.field){
                     case 'bar1_value':
                     case 'bar2_value':
                     case 'bar3_value':
-                      adjuster = (a,t)=>Math.max(0,Math.min(a,t.get(this.field.replace(/_value/,'_max'))));
-                      break;
-                  }
+                        if(this.enforce){
+                            adjuster = (a,t)=>Math.max(0,Math.min(a,t.get(this.field.replace(/_value/,'_max'))));
+                        }
+                        break;
+
+                    case 'night_vision_distance':
+                        adjuster = (a,token,mods) => { 
+                            let pnv;
+                            if(mods.hasOwnProperty('night_vision_distance')){
+                              pnv = mods.night_vision_distance;
+                            } else {
+                              pnv = token.get('night_vision_distance');
+                            }
+
+                            let dp;
+                            if(mods.hasOwnProperty('night_vision_effect') && /^Dimming_/.test(mods.night_vision_effect)){
+                              dp = parseFloat(mods.night_vision_effect.replace(/^Dimming_/,''))||undefined;
+                            } else if(/^Dimming_/.test(token.get('night_vision_effect'))){
+                              dp = parseFloat(token.get('night_vision_effect').replace(/^Dimming_/,''))||undefined;
+                            }
+
+                            if(undefined !== dp) {
+                              let dd = 0;
+                              if(dp>0){
+                                  dd = parseFloat(pnv)*dp;
+                                  dp=Math.min(1,parseFloat(dd.toFixed(2))/a);
+                              }
+
+                              mods.night_vision_effect=`Dimming_${dp}`;
+                            }
+                            return a; 
+                        };
+                        break;
                 }
 
                 switch(this.operation){
@@ -352,15 +492,16 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                                 return {
                                     low_light_distance: ((parseFloat(getValue('bright_light_distance',mods,token))||0)+num)
                                 };
+
                             default:
-                                return {[this.field]:adjuster(num,token)};
+                                return {[this.field]:adjuster(num,token,mods)};
                         }
                     }
-                    case '!': return {[this.field]:adjuster((current===0 ? num : ''),token)};
-                    case '+': return {[this.field]:adjuster((current+num),token)};
-                    case '-': return {[this.field]:adjuster((current-num),token)};
-                    case '/': return {[this.field]:adjuster((current/(num||1)),0)};
-                    case '*': return {[this.field]:adjuster((current*num),0)};
+                    case '!': return {[this.field]:adjuster((current===0 ? num : ''),token,mods)};
+                    case '+': return {[this.field]:adjuster((current+num),token,mods)};
+                    case '-': return {[this.field]:adjuster((current-num),token,mods)};
+                    case '/': return {[this.field]:adjuster((current/(num||1)),0,mods)};
+                    case '*': return {[this.field]:adjuster((current*num),0,mods)};
                 }
             }
 
@@ -1105,7 +1246,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
 
             static decomposeStatuses(statuses){
                 return _.reduce(statuses.split(/,/),function(memo,st,idx){
-                    var parts=st.split(/@/),
+                    let parts=st.split(/@/),
                     entry = {
                         mark: parts[0],
                         num: parseInt(parts[1],10),
@@ -1374,7 +1515,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             })
             .filter((p)=>playerIsGM(p.id))
             .map((p)=>p.get('lastpage'))
-        ])
+          ])
         ];
 
         const getPageForPlayer = (playerid) => {
@@ -1405,14 +1546,14 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                   return n;
                 },
             degrees: function(t){
-                    var n = parseFloat(t);
+                    let n = parseFloat(t);
                     if(!_.isNaN(n)) {
                         n %= 360;
                     }
                     return n;
                 },
             circleSegment: function(t){
-                    var n = Math.abs(parseFloat(t));
+                    let n = Math.abs(parseFloat(t));
                     if(!_.isNaN(n)) {
                         n = Math.min(360,Math.max(0,n));
                     }
@@ -1441,7 +1582,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
         };
 
     const checkGlobalConfig = function(){
-        var s=state.TokenMod,
+        let s=state.TokenMod,
             g=globalconfig && globalconfig.tokenmod;
 
         if(g && g.lastsaved && g.lastsaved > s.globalconfigCache.lastsaved){
@@ -1518,7 +1659,11 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
 
     const notifyObservers = function(event,obj,prev){
         _.each(observers[event],function(handler){
+          try {
             handler(obj,prev);
+          } catch(e) {
+            log(`TokenMod: An observer threw and exception in handler: ${handler}`);
+          }
         });
     };
 
@@ -1560,8 +1705,27 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
         };
     }());
 
+    const HE = (() => {
+        const esRE = (s) => s.replace(/(\\|\/|\[|\]|\(|\)|\{|\}|\?|\+|\*|\||\.|\^|\$)/g,'\\$1');
+        const e = (s) => `&${s};`;
+        const entities = {
+            '<' : e('lt'),
+            '>' : e('gt'),
+            "'" : e('#39'),
+            '@' : e('#64'),
+            '{' : e('#123'),
+            '|' : e('#124'),
+            '}' : e('#125'),
+            '[' : e('#91'),
+            ']' : e('#93'),
+            '"' : e('quot')
+        };
+        const re = new RegExp(`(${Object.keys(entities).map(esRE).join('|')})`,'g');
+        return (s) => s.replace(re, (c) => (entities[c] || c) );
+    })();
+
     const ch = function (c) {
-        var entities = {
+        let entities = {
             '<' : 'lt',
             '>' : 'gt',
             "'" : '#39',
@@ -1584,7 +1748,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
     };
 
     const getConfigOption_PlayersCanIDs = function() {
-        var text = ( state.TokenMod.playersCanUse_ids ?
+        let text = ( state.TokenMod.playersCanUse_ids ?
                 '<span style="color: red; font-weight:bold; padding: 0px 4px;">ON</span>' :
                 '<span style="color: #999999; font-weight:bold; padding: 0px 4px;">OFF</span>'
             );
@@ -1609,7 +1773,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
         section: (s,...o) => `${_h.subhead(s)}${_h.inset(...o)}`,
         paragraph: (...o) => `<p>${o.join(' ')}</p>`,
         experimental: () => `<div style="display:inline-block;padding: .1em 1em; border: 1px solid #993333; border-radius:.5em;background-color:#cccccc;color:#ff0000;">Experimental</div>`,
-        items: (o) => `<li>${o.join('</li><li>')}</li>`,
+        items: (o) => o.map(t=>`<li>${t}</li>`).join(''),
         ol: (...o) => `<ol>${_h.items(o)}</ol>`,
         ul: (...o) => `<ul>${_h.items(o)}</ul>`,
         grid: (...o) => `<div style="padding: 12px 0;">${o.join('')}<div style="clear:both;"></div></div>`, 
@@ -1761,6 +1925,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     _h.inset(
                         _h.grid(
                             _h.cell('showname'),
+                            _h.cell('show_tooltip'),
                             _h.cell('showplayers_name'),
                             _h.cell('showplayers_bar1'),
                             _h.cell('showplayers_bar2'),
@@ -1780,7 +1945,6 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                             _h.cell('fliph'),
                             _h.cell('aura1_square'),
                             _h.cell('aura2_square'),
-                            _h.cell(''),
 
                             _h.cell("has_bright_light_vision"),
                             _h.cell("has_limit_field_of_vision"),
@@ -1793,7 +1957,8 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                             _h.cell("emits_bright_light"),
                             _h.cell("emits_bright"),
                             _h.cell("emits_low_light"),
-                            _h.cell("emits_low")
+                            _h.cell("emits_low"),
+                            _h.cell('lockMovement')
                         )
                     ),
                     _h.paragraph( `Any of the booleans can be set with the ${_h.italic('--set')} command by passing a true or false as the value`),
@@ -1822,7 +1987,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                         _h.minorhead('Available Percentage Properties:'),
                         _h.inset(
                             _h.grid(
-                                _h.cell('dim_light_opacity'),
+                                _h.cell('dim_light_opacity')
                             )
                         ),
                         _h.paragraph(`Setting the low light opacity to 30%:`),
@@ -1831,6 +1996,122 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                         ),
                         _h.inset(
                             _h.pre( '!token-mod --set dim_light_opacity|0.3' )
+                        )
+                    )
+                ),
+
+        setNightVisionEffect: (/* context*/) => _h.join(
+                    _h.subhead('Night Vision Effect'),
+                    _h.inset(
+                        _h.paragraph(`Night Vision Effect specifies how the region of night vision around a token looks.  There are two effects that can be turned on: ${_h.code('dimming')} and ${_h.code('nocturnal')}. You can disable Night Vision Effects using ${_h.code('off')}, ${_h.code('none')}, or leave the field blank.  Any other value is ignored.`),
+                        _h.minorhead('Available Night Vision Effect Properties:'),
+                        _h.inset(
+                            _h.grid(
+                                _h.cell('night_vision_effect')
+                            )
+                        ),
+                        _h.paragraph(`Enable the nocturnal Night Vision Effect on a token:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set night_vision_effect|nocturnal' )
+                        ),
+                        _h.paragraph(`Enable the dimming Night Vision Effect on a token, with dimming starting at 5ft from the token:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set night_vision_effect|dimming' )
+                        ),
+                        _h.paragraph(`Dimming can take an additional argument to set the distance from the token to begin dimming.  The default is 5ft if not specified. Distances are provided by appending a another ${_h.code('|')} character and adding a number followed by either a unit or a ${_h.code('%')}:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set night_vision_effect|dimming|5ft' ),
+                            _h.pre( '!token-mod --set night_vision_effect|dimming|1u' )
+                        ),
+                        _h.paragraph(`Using the ${_h.code('%')} allows you to specify the distance as a percentage of the Night Vision Distance.  Numbers less than 1 are treated as a decimal percentage.  Both of the following are the same:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set night_vision_effect|dimming|20%' ),
+                            _h.pre( '!token-mod --set night_vision_effect|dimming|0.2%' )
+                        ),
+                        _h.paragraph(`You can also use operators to make relative changes.  Operators are ${_h.code('+')}, ${_h.code('-')}, ${_h.code('*')}, and ${_h.code('/')}`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set night_vision_effect|dimming|+10%' ),
+                            _h.pre( '!token-mod --set night_vision_effect|dimming|-5ft' ),
+                            _h.pre( '!token-mod --set night_vision_effect|dimming|/2' ),
+                            _h.pre( '!token-mod --set night_vision_effect|dimming|*10' )
+                        ),
+                        _h.paragraph(`Disable any Night Vision Effects on a token:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set night_vision_effect|off' )
+                        ),
+                        _h.inset(
+                            _h.pre( '!token-mod --set night_vision_effect|none' )
+                        ),
+                        _h.inset(
+                            _h.pre( '!token-mod --set night_vision_effect|' )
+                        )
+                      )
+                    ),
+
+        setCompactBar: (/* context*/) => _h.join(
+                    _h.subhead('Compact Bar'),
+                    _h.inset(
+                        _h.paragraph(`Compact Bar specifes how the bar looks.  A compact bar is much smaller than the normal presentation and does not have numbers overlaying it.  To enable Compact Bar for a token, use ${_h.code('compact')} or ${_h.code('on')}. You can disable Compact Bar using ${_h.code('off')}, ${_h.code('none')}, or leave the field blank.  Any other value is ignored.`),
+                        _h.minorhead('Available Compact Bar Properties:'),
+                        _h.inset(
+                            _h.grid(
+                                _h.cell('compact_bar')
+                            )
+                        ),
+                        _h.paragraph(`Enable Compact Bar on a token:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set compact_bar|compact' )
+                        ),
+                        _h.inset(
+                            _h.pre( '!token-mod --set compact_bar|on' )
+                        ),
+                        _h.paragraph(`Disable Compact Bar on a token:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set compact_bar|off' )
+                        ),
+                        _h.inset(
+                            _h.pre( '!token-mod --set compact_bar|none' )
+                        ),
+                        _h.inset(
+                            _h.pre( '!token-mod --set compact_bar|' )
+                        )
+                      )
+                    ),
+
+        setBarLocation: (/* context*/) => _h.join(
+                    _h.subhead('Bar Location'),
+                    _h.inset(
+                        _h.paragraph(`Bar Location specifes where the bar on a token appears.  There are 4 options: ${_h.code('above')}, ${_h.code('overlap_top')}, ${_h.code('overlap_bottom')}, and ${_h.code('below')}. You can also use ${_h.code('off')}, ${_h.code('none')}, or leave the field blank as an alias for ${_h.code('above')}.  Any other value is ignored.`),
+                        _h.minorhead('Available Bar Location Properties:'),
+                        _h.inset(
+                            _h.grid(
+                                _h.cell('bar_location')
+                            )
+                        ),
+                        _h.paragraph(`Setting the bar location to below the token:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set bar_location|below' )
+                        ),
+                        _h.paragraph(`Setting the bar location to overlap the top of the token:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set bar_location|overlap_top' )
+                        ),
+                        _h.paragraph(`Setting the bar location to overlap the bottom of the token:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set bar_location|overlap_bottom' )
+                        ),
+                        _h.paragraph(`Setting the bar location to above the token:`),
+                        _h.inset(
+                            _h.pre( '!token-mod --set bar_location|above' )
+                        ),
+                        _h.inset(
+                            _h.pre( '!token-mod --set dim_light_opacity|none' )
+                        ),
+                        _h.inset(
+                            _h.pre( '!token-mod --set dim_light_opacity|off' )
+                        ),
+                        _h.inset(
+                            _h.pre( '!token-mod --set dim_light_opacity|' )
                         )
                     )
                 ),
@@ -1847,6 +2128,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                                 _h.cell('width'),
                                 _h.cell('height'),
                                 _h.cell('scale'),
+                                _h.cell('light_sensitivity_multiplier')
                             )
                         ),
                         _h.paragraph( `It${ch("'")}s probably a good idea not to set the location of a token off screen, or the width or height to 0.`),
@@ -1993,7 +2275,9 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                             _h.cell('tint_color'),
                             _h.cell('aura1_color'),
                             _h.cell('aura2_color'),
-                            _h.cell('night_vision_tint')
+                            _h.cell('night_vision_tint'),
+                            _h.cell('lightColor'),
+                            _h.cell('lightcolor')
                         )
                     ),
                     _h.paragraph('Turning off the tint and setting aura1 to a reddish color.  All of the following are the same:'),
@@ -2055,6 +2339,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     _h.inset(
                         _h.grid(
                             _h.cell('name'),
+                            _h.cell('tooltip'),
                             _h.cell('bar1_value'),
                             _h.cell('bar2_value'),
                             _h.cell('bar3_value'),
@@ -2136,7 +2421,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
 
                     _h.paragraph(`You can use a semicolon (${_h.code(';')}) in place of a colon (${_h.code(':')}) to allow setting statuses with numbers from API Buttons.`),
                     _h.inset(
-                        _h.pre('[Set some statuses](!token-mod --set statusmarkers|blue;0|red;3|green|padlock;2|broken-shield;7)')
+                        _h.pre(`${ch('[')}[Set some statuses](!token-mod --set statusmarkers|blue;0|red;3|green|padlock;2|broken-shield;7)`)
                     ),
 
                     _h.paragraph(`The numbers following a status can be prefaced with a ${_h.code('+')} or ${_h.code('-')}, which causes their value to be applied to the current value. Here${ch("'")}s an example showing blue getting incremented by 2, and padlock getting decremented by 1.  Values will be bounded between 0 and 9.`),
@@ -2212,7 +2497,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     ),
                     _h.paragraph(`You can use a semicolon (${_h.code(';')}) in place of a colon (${_h.code(':')}) to allow setting statuses with numbers from API Buttons.`),
                     _h.inset(
-                        _h.pre('[3 Mountain Pass](!token-mod --set statusmarkers|Mountain_Pass;;1234568;3)')
+                        _h.pre(`${ch('[')}3 Mountain Pass](!token-mod --set statusmarkers|Mountain_Pass;;1234568;3)`)
                     )
 
                 )
@@ -2588,6 +2873,9 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                         helpParts.setCircleSegment(context),
                         helpParts.setColors(context),
                         helpParts.setText(context),
+                        helpParts.setNightVisionEffect(context),
+                        helpParts.setBarLocation(context),
+                        helpParts.setCompactBar(context),
                         helpParts.setLayer(context),
                         helpParts.setStatus(context),
                         helpParts.setImage(context),
@@ -2731,7 +3019,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
 
 
     const getRelativeChange = function(current,update) {
-        var cnum,unum,op='=';
+        let cnum,unum,op='=';
         if(_.isString(update)){
             if( _.has(update,0) && ('=' === update[0]) ){
                 return parseFloat(_.rest(update).join(''));
@@ -2789,8 +3077,8 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                       let v = args.shift().toLowerCase();
                       if(filters.isTruthyArgument(v)){
                         retr[cmd].push(true);
-                      } else if (propBool.hasOwnProperty(v)){
-                        retr[cmd].push(propBool[v]());
+                      } else if (probBool.hasOwnProperty(v)){
+                        retr[cmd].push(probBool[v]());
                       } else {
                         retr[cmd].push(false);
                       }
@@ -2800,6 +3088,20 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                 case 'text':
                     retr[cmd].push(args.shift().replace(regex.stripSingleQuotes,'$1').replace(regex.stripDoubleQuotes,'$1'));
                     break;
+
+                case 'option': {
+                      let o = option_fields[cmd];
+                      let ks = Object.keys(o);
+                      let arg = args.shift().toLowerCase();
+                      if(0 === arg.length){
+                        arg='__default__';
+                      }
+                      if(ks.includes(arg)){
+                        retr[cmd].push(o[arg](args.shift()));
+                      }
+                    }
+                    break;
+
 
                 case 'numberBlank':
                     retr[cmd].push(numberOp.parse(cmd,args.shift()));
@@ -2886,7 +3188,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                             t2=findObjs({type: 'character',archived: false});
                             t=_.chain([ args[0].replace(regex.stripSingleQuotes,'$1').replace(regex.stripDoubleQuotes,'$1') ])
                                 .map(function(n){
-                                    var l=_.filter(t2,function(c){
+                                    let l=_.filter(t2,function(c){
                                         return c.get('name').toLowerCase() === n.toLowerCase();
                                     });
                                     return ( 1 === l.length ? l : _.filter(t2,function(c){
@@ -2945,7 +3247,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
     };
 
     const expandMetaArguments = function(memo,a) {
-        var args=a.split(/[|#]/),
+        let args=a.split(/[|#]/),
             cmd=args.shift();
         switch(cmd) {
             case 'bar1':
@@ -3164,6 +3466,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                 case 'light_radius':
                 case 'light_dimradius':
                 case 'light_multiplier':
+                case 'light_sensitivity_multiplier':
                 case 'aura2_radius':
                 case 'aura1_radius':
                 case 'adv_fow_view_distance':
@@ -3176,6 +3479,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                     mods = Object.assign( mods, f[0].getMods(token,mods));
                     break;
 
+
                 case 'bar1_reset':
                 case 'bar2_reset':
                 case 'bar3_reset': {
@@ -3187,26 +3491,35 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                   }
                   break;
 
+
                 case 'bar1_value':
                 case 'bar2_value':
                 case 'bar3_value':
-                    delta=getRelativeChange(token.get(k),f[0]);
-                    if(_.isNumber(delta) || _.isString(delta)) {
-                      if(/!$/.test(f[0])) {
-                        delta = Math.max(0,Math.min(delta,token.get(k.replace(/_value$/,'_max'))));
+                    if(regex.numberString.test(f[0])){
+                        delta=getRelativeChange(token.get(k),f[0]);
+                        if(_.isNumber(delta) || _.isString(delta)) {
+                          if(/!$/.test(f[0])) {
+                            delta = Math.max(0,Math.min(delta,token.get(k.replace(/_value$/,'_max'))));
+                          }
+                          mods[k]=delta;
+                        }
+                      } else {
+                          mods[k]=f[0];
                       }
-                      mods[k]=delta;
-                    }
                     break;
 
                 case 'bar1_max':
                 case 'bar2_max':
                 case 'bar3_max':
                 case 'name':
-                    delta=getRelativeChange(token.get(k),f[0]);
-                    if(_.isNumber(delta) || _.isString(delta)) {
-                        mods[k]=delta;
-                    }
+                    if(regex.numberString.test(f[0])){
+                        delta=getRelativeChange(token.get(k),f[0]);
+                        if(_.isNumber(delta) || _.isString(delta)) {
+                            mods[k]=delta;
+                        }
+                      } else {
+                          mods[k]=f[0];
+                      }
                     break;
 
                   case 'currentSide':
@@ -3221,8 +3534,29 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                   case 'aura2_color':
                   case 'tint_color':
                   case 'night_vision_tint':
+                  case 'lightColor':
                     mods[k]=f[0].applyTo(token.get(k)).toHTML();
                     break;
+
+                case 'night_vision_effect':
+                  mods[k]=f[0](token,mods);
+                  break;
+
+/*
+                case 'light_sensitivity_multiplier':
+                    // {type: 'number'},
+                    break;
+
+                    // 'None', 'Dimming', 'Nocturnal'
+                    break;
+                case 'bar_location':
+                  // null, 'overlap_top', 'overlap_bottom', 'below'
+                  break;
+
+                case 'compact_bar':
+                  // null, 'compact'
+                  break;
+*/
 
                 default:
                     mods[k]=f[0];
@@ -3283,24 +3617,6 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
             }
         };
 
-        const HE = (() => {
-            const esRE = (s) => s.replace(/(\\|\/|\[|\]|\(|\)|\{|\}|\?|\+|\*|\||\.|\^|\$)/g,'\\$1');
-            const e = (s) => `&${s};`;
-            const entities = {
-                '<' : e('lt'),
-                '>' : e('gt'),
-                "'" : e('#39'),
-                '@' : e('#64'),
-                '{' : e('#123'),
-                '|' : e('#124'),
-                '}' : e('#125'),
-                '[' : e('#91'),
-                ']' : e('#93'),
-                '"' : e('quot')
-            };
-            const re = new RegExp(`(${Object.keys(entities).map(esRE).join('|')})`,'g');
-            return (s) => s.replace(re, (c) => (entities[c] || c) );
-        })();
 
         const getChange = (()=> {
           const charName = (cid) => (getObj('character',cid)||{get:()=>'[Missing]'}).get('name');
@@ -3393,7 +3709,7 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
     };
 
     const handleConfig = function(config, id) {
-        var args, cmd, who=(getObj('player',id)||{get:()=>'API'}).get('_displayname');
+        let args, cmd, who=(getObj('player',id)||{get:()=>'API'}).get('_displayname');
 
         if(config.length) {
             while(config.length) {
@@ -3434,10 +3750,50 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
         }
     };
 
+
+    
+
+    const OutputDebugInfo = (msg,ids,modlist,badCmds) => {
+      let selMap = (msg.selected||[]).map(o=>o._id);
+      let who=(getObj('player',msg.playerid)||{get:()=>'API'}).get('_displayname');
+      let fMsg = HE(msg.content.replace(/<br\/>/g,'')).replace(/ /g,'&nbsp;').replace(/\$/g,'&#36;');
+      let fIds = ids.map((o)=>{
+        if(undefined !== o.token){
+          return `${_h.bold('Token:')} ${o.token.get('name')} [${_h.code(o.token.id)}]${selMap.includes(o.token.id)?` ${_h.bold('Selected')}`:''}`;
+        } else if(undefined !== o.character){
+          return `${_h.bold('Character:')} ${o.character.get('name')} [${_h.code(o.character.id)}]`;
+        } 
+        return `${_h.bold('Unknown:')} [${_h.code(o.id)}]`;
+      });
+
+      sendChat('TokenMod: Debug',`/w "${who}" &{template:default}{{Command=${_h.pre(fMsg)}}}{{Targets=${_h.ul(...fIds)}}}`);
+      
+      //$d({msg:msg.content,fMsg,modlist,badCmds});
+    };
+
+
+  const processInlinerolls = (msg) => {
+    if(msg.hasOwnProperty('inlinerolls')){
+      return msg.inlinerolls
+        .reduce((m,v,k) => {
+          let ti=v.results.rolls.reduce((m2,v2) => {
+            if(v2.hasOwnProperty('table')){
+              m2.push(v2.results.reduce((m3,v3) => [...m3,(v3.tableItem||{}).name],[]).join(", "));
+            }
+            return m2;
+          },[]).join(', ');
+          return [...m,{k:`$[[${k}]]`, v:(ti.length && ti) || v.results.total || 0}];
+        },[])
+        .reduce((m,o) => m.replace(o.k,o.v), msg.content);
+    } else {
+      return msg.content;
+    }
+  };
+
 // */
      const handleInput = function(msg_orig) {
         try {
-            if (msg_orig.type !== "api") {
+            if (msg_orig.type !== "api" || !/^!token-mod(\b\s|$)/.test(msg_orig.content)) {
                 return;
             }
 
@@ -3459,169 +3815,158 @@ const TokenMod = (() => { // eslint-disable-line no-unused-vars
                 };
             let reports=[];
 
-
-            if(_.has(msg,'inlinerolls')){
-                msg.content = _.chain(msg.inlinerolls)
-                    .reduce(function(m,v,k){
-                        var ti=_.reduce(v.results.rolls,function(m2,v2){
-                            if(_.has(v2,'table')){
-                                m2.push(_.reduce(v2.results,function(m3,v3){
-                                    m3.push(v3.tableItem.name);
-                                    return m3;
-                                },[]).join(', '));
-                            }
-                            return m2;
-                        },[]).join(', ');
-                        m['$[['+k+']]']= (ti.length && ti) || v.results.total || 0;
-                        return m;
-                    },{})
-                    .reduce(function(m,v,k){
-                        return m.replace(k,v);
-                    },msg.content)
-                    .value();
-            }
+			msg.content = processInlinerolls(msg)
 
             args = msg.content
                 .replace(/<br\/>\n/g, ' ')
                 .replace(/(\{\{(.*?)\}\})/g," $2 ")
                 .split(/\s+--/);
 
+            let IsDebugRequest = false;
+            let Debug_UnrecognizedCommands = [];
 
-            switch(args.shift()) {
-                case '!token-mod': {
 
-                    while(args.length) {
-                        cmds=args.shift().match(/([^\s]+[|#]'[^']+'|[^\s]+[|#]"[^"]+"|[^\s]+)/g);
-                        switch(cmds.shift()) {
-                            case 'help':
+			while(args.length) {
+				cmds=args.shift().match(/([^\s]+[|#]'[^']+'|[^\s]+[|#]"[^"]+"|[^\s]+)/g);
+				let cmd = cmds.shift();
+				switch(cmd) {
+					case 'help':
 
 // !tokenmod --help [all]
-    // just the top part and ToC
+// just the top part and ToC
 
 // !tokenmod --help
-    // just the top part and ToC
+// just the top part and ToC
 
 // !tokenmod --help[-only] [set|on|off|flip|config]
-    // top part, plus the command parts
-    // -only leaves off top part
+// top part, plus the command parts
+// -only leaves off top part
 
 // !tokenmod --help[-only] <property> [<properties...]
-    // top part, command part, property part
-    // -only leaves off top and command 
+// top part, command part, property part
+// -only leaves off top and command 
 
 // !tokenmod --help <full command>
-    // explains the parts command
+// explains the parts command
 
 
-                                showHelp(playerid);
-                                return;
+						showHelp(playerid);
+						return;
 
-                            case 'api-as':
-                                if('API' === playerid){
-                                    let player = getObj('player',cmds[0]);
-                                    if(player){
-                                        playerid = player.id;
-                                        who = player.get('_displayname');
-                                    }
-                                }
-                                break;
+					case 'api-as':
+						if('API' === playerid){
+							let player = getObj('player',cmds[0]);
+							if(player){
+								playerid = player.id;
+								who = player.get('_displayname');
+							}
+						}
+						break;
 
-                            case 'config':
-                                if(playerIsGM(playerid)) {
-                                    handleConfig(cmds,playerid);
-                                }
-                                return;
+					case 'debug': {
+						IsDebugRequest = true;
+					  }
+					  break;
+
+					case 'config':
+						if(playerIsGM(playerid)) {
+							handleConfig(cmds,playerid);
+						}
+						return;
 
 
-                            case 'flip':
-                                modlist.flip=_.union(_.filter(cmds.map(unalias),filters.isBoolean),modlist.flip);
-                                break;
+					case 'flip':
+						modlist.flip=_.union(_.filter(cmds.map(unalias),filters.isBoolean),modlist.flip);
+						break;
 
-                            case 'on':
-                                modlist.on=_.union(_.filter(cmds.map(unalias),filters.isBoolean),modlist.on);
-                                break;
+					case 'on':
+						modlist.on=_.union(_.filter(cmds.map(unalias),filters.isBoolean),modlist.on);
+						break;
 
-                            case 'off':
-                                modlist.off=_.union(_.filter(cmds.map(unalias),filters.isBoolean),modlist.off);
-                                break;
+					case 'off':
+						modlist.off=_.union(_.filter(cmds.map(unalias),filters.isBoolean),modlist.off);
+						break;
 
-                            case 'set':
-                                modlist.set=parseSetArguments(cmds,modlist.set);
-                                break;
+					case 'set':
+						modlist.set=parseSetArguments(cmds,modlist.set);
+						break;
 
-                            case 'order':
-                                modlist.order=parseOrderArguments(cmds,modlist.order);
-                                break;
+					case 'order':
+						modlist.order=parseOrderArguments(cmds,modlist.order);
+						break;
 
-                            case 'report':
-                                reports= parseReportArguments(cmds,reports);
-                                break;
+					case 'report':
+						reports= parseReportArguments(cmds,reports);
+						break;
 
-                            case 'move':
-                                modlist.move = parseMoveArguments(cmds,modlist.move);
-                                break;
+					case 'move':
+						modlist.move = parseMoveArguments(cmds,modlist.move);
+						break;
 
-                            case 'ignore-selected':
-                                ignoreSelected=true;
-                                break;
+					case 'ignore-selected':
+						ignoreSelected=true;
+						break;
 
-                            case 'active-pages':
-                                pageRestriction=getActivePages();
-                                break;
+					case 'active-pages':
+						pageRestriction=getActivePages();
+						break;
 
-                            case 'current-page':
-                                pageRestriction=[getPageForPlayer(playerid)];
-                                break;
+					case 'current-page':
+						pageRestriction=[getPageForPlayer(playerid)];
+						break;
 
-                            case 'ids':
-                                ids=_.union(cmds,ids);
-                                break;
-                        }
-                    }
-                    modlist.off=_.difference(modlist.off,modlist.on);
-                    modlist.flip=_.difference(modlist.flip,modlist.on,modlist.off);
-                    if( !playerIsGM(playerid) && !state.TokenMod.playersCanUse_ids ) {
-                        ids=[];
-                    }
+					case 'ids':
+						ids=_.union(cmds,ids);
+						break;
 
-                    if(!ignoreSelected) {
-                        ids=_.union(ids,_.pluck(msg.selected,'_id'));
-                    }
+					default:
+					  Debug_UnrecognizedCommands.push({cmd,args:cmds});
+					  break;
+				}
+			}
+			modlist.off=_.difference(modlist.off,modlist.on);
+			modlist.flip=_.difference(modlist.flip,modlist.on,modlist.off);
+			if( !playerIsGM(playerid) && !state.TokenMod.playersCanUse_ids ) {
+				ids=[];
+			}
 
-                    let pageFilter = pageRestriction.length
-                        ? (o) => pageRestriction.includes(o.get('pageid'))
-                        : () => true;
+			if(!ignoreSelected) {
+				ids=_.union(ids,_.pluck(msg.selected,'_id'));
+			}
 
-                    if(ids.length){
-                        _.chain(ids)
-                        .uniq()
-                        .map(function(t){
-                            return {
-                                id: t,
-                                token: getObj('graphic',t),
-                                character: getObj('character',t)
-                            };
-                        })
-                        .reduce(function(m,o){
-                            if(o.token){
-                                m.push(o.token);
-                            } else if(o.character){
-                                m=_.union(m,findObjs({type:'graphic',represents:o.character.id}));
-                            }
-                            return m;
-                        },[])
-                        .uniq()
-                        .reject(_.isUndefined)
-                        .filter(pageFilter)
-                        .each(function(t) {
-                            let ctx = applyModListToToken(modlist,t);
-                            doReports(ctx,reports,who);
-                        });
-                    }
-                }
-                break;
+			let pageFilter = pageRestriction.length
+				? (o) => pageRestriction.includes(o.get('pageid'))
+				: () => true;
 
-            }
+			ids = [...new Set([...ids])]
+				.map(function(t){
+					return {
+						id: t,
+						token: getObj('graphic',t),
+						character: getObj('character',t)
+					};
+				});
+
+			if(IsDebugRequest){
+			  OutputDebugInfo(msg_orig,ids,modlist,Debug_UnrecognizedCommands);
+			}
+
+			if(ids.length){
+				[...new Set(ids.reduce(function(m,o){
+					if(o.token){
+						m.push(o.token);
+					} else if(o.character){
+						m=_.union(m,findObjs({type:'graphic',represents:o.character.id}));
+					}
+					return m;
+				},[]))]
+				  .filter(o=>undefined !== o)
+				  .filter(pageFilter)
+				  .forEach((t) => {
+					  let ctx = applyModListToToken(modlist,t);
+					  doReports(ctx,reports,who);
+				  });
+			}
         } catch (e) {
             let who=(getObj('player',msg_orig.playerid)||{get:()=>'API'}).get('_displayname');
             sendChat('TokenMod',`/w "${who}" `+
